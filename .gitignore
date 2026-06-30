@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+captures/
+
+# Local Android config
+local.properties
+*.keystore
+*.jks
+
+# Kotlin / IDE caches
+.kotlin/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and reports
+*.log
+hs_err_pid*
+replay_pid*
+
+# Generated APK/AAB artifacts
+*.apk
+*.aab
+*.ap_
+
+# Proguard mapping if generated locally
+mapping.txt
