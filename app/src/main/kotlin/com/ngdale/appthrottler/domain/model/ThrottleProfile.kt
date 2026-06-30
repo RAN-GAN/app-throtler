@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.domain.model
+package com.rangandale.appthrottler.domain.model
 
 data class ThrottleProfile(
     val id: Long = 0,

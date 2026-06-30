@@ -1,10 +1,10 @@
-package com.ngdale.appthrottler.presentation.viewmodel
+package com.rangandale.appthrottler.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import com.ngdale.appthrottler.data.repository.AppRepository
-import com.ngdale.appthrottler.domain.model.AppInfo
+import com.rangandale.appthrottler.data.repository.AppRepository
+import com.rangandale.appthrottler.domain.model.AppInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

@@ -1,9 +1,9 @@
-package com.ngdale.appthrottler.data.repository
+package com.rangandale.appthrottler.data.repository
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import com.ngdale.appthrottler.domain.model.AppInfo
+import com.rangandale.appthrottler.domain.model.AppInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow

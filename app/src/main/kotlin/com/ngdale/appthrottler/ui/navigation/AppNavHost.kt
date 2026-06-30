@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.ui.navigation
+package com.rangandale.appthrottler.ui.navigation
 
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,18 +18,21 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.ngdale.appthrottler.presentation.ui.screens.AppListScreen
-import com.ngdale.appthrottler.presentation.ui.screens.HomeScreen
-import com.ngdale.appthrottler.presentation.ui.screens.ProfilesScreen
-import com.ngdale.appthrottler.presentation.ui.screens.SettingsScreen
-import com.ngdale.appthrottler.presentation.viewmodel.AppListViewModel
-import com.ngdale.appthrottler.presentation.viewmodel.VpnControlViewModel
+import com.rangandale.appthrottler.presentation.ui.screens.AppListScreen
+import com.rangandale.appthrottler.presentation.ui.screens.HomeScreen
+import com.rangandale.appthrottler.presentation.ui.screens.LogsScreen
+import com.rangandale.appthrottler.presentation.ui.screens.ProfilesScreen
+import com.rangandale.appthrottler.presentation.ui.screens.SettingsScreen
+import com.rangandale.appthrottler.presentation.viewmodel.AppListViewModel
+import com.rangandale.appthrottler.presentation.viewmodel.LogsViewModel
+import com.rangandale.appthrottler.presentation.viewmodel.VpnControlViewModel
 
 @Composable
 fun AppThrottlerApp(modifier: Modifier = Modifier) {
     val navController = rememberNavController()
-    val vpnViewModel = hiltViewModel<com.ngdale.appthrottler.presentation.viewmodel.VpnControlViewModel>()
+    val vpnViewModel = hiltViewModel<com.rangandale.appthrottler.presentation.viewmodel.VpnControlViewModel>()
     val appListViewModel = hiltViewModel<AppListViewModel>()
+    val logsViewModel = hiltViewModel<LogsViewModel>()
     var currentRoute by remember { mutableStateOf(NavRoute.Home.route) }
 
     Scaffold(
@@ -59,6 +62,7 @@ fun AppThrottlerApp(modifier: Modifier = Modifier) {
             navController = navController,
             vpnViewModel = vpnViewModel,
             appListViewModel = appListViewModel,
+            logsViewModel = logsViewModel,
             onRouteChanged = { currentRoute = it },
         )
     }
@@ -70,6 +74,7 @@ private fun AppNavHost(
     navController: androidx.navigation.NavHostController,
     vpnViewModel: VpnControlViewModel,
     appListViewModel: AppListViewModel,
+    logsViewModel: LogsViewModel,
     onRouteChanged: (String) -> Unit,
 ) {
     Surface(
@@ -99,6 +104,10 @@ private fun AppNavHost(
             composable(NavRoute.Profiles.route) {
                 onRouteChanged(NavRoute.Profiles.route)
                 ProfilesScreen(contentPadding = innerPadding, viewModel = vpnViewModel)
+            }
+            composable(NavRoute.Logs.route) {
+                onRouteChanged(NavRoute.Logs.route)
+                LogsScreen(contentPadding = innerPadding, viewModel = logsViewModel)
             }
         }
     }

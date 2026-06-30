@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.presentation.ui.screens
+package com.rangandale.appthrottler.presentation.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,8 +19,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.ngdale.appthrottler.presentation.viewmodel.AppListViewModel
-import com.ngdale.appthrottler.presentation.viewmodel.VpnControlViewModel
+import com.rangandale.appthrottler.presentation.viewmodel.AppListViewModel
+import com.rangandale.appthrottler.presentation.viewmodel.VpnControlViewModel
 
 @Composable
 fun AppListScreen(
@@ -44,7 +44,7 @@ fun AppListScreen(
     ) {
         Text(text = "Apps", style = MaterialTheme.typography.headlineLarge)
         Text(text = "Select the apps you want routed through the VPN.")
-        Text(text = "Selected: ${uiState.selectedPackages.size}")
+        Text(text = "Selected: ${vpnState.currentConfig.selectedApps.size}")
         LazyColumn(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp),

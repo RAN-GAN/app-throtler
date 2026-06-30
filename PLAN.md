@@ -82,7 +82,7 @@ app-throtler/
     ├── build.gradle.kts
     └── src/main/
         ├── AndroidManifest.xml
-        └── kotlin/com/ngdale/appthrottler/
+        └── kotlin/com/rangandale/appthrottler/
             │
             ├── ThrottlerApplication.kt        # @HiltAndroidApp
             ├── MainActivity.kt                # @AndroidEntryPoint, hosts Compose root

@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.presentation.ui.screens
+package com.rangandale.appthrottler.presentation.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,8 +23,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.ngdale.appthrottler.domain.model.PresetProfiles
-import com.ngdale.appthrottler.presentation.viewmodel.VpnControlViewModel
+import com.rangandale.appthrottler.domain.model.PresetProfiles
+import com.rangandale.appthrottler.presentation.viewmodel.VpnControlViewModel
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)

@@ -1,10 +1,10 @@
-package com.ngdale.appthrottler.di
+package com.rangandale.appthrottler.di
 
 import android.content.Context
 import androidx.room.Room
-import com.ngdale.appthrottler.data.local.ThrottleDatabase
-import com.ngdale.appthrottler.data.repository.AppRepository
-import com.ngdale.appthrottler.data.repository.ProfileRepository
+import com.rangandale.appthrottler.data.local.ThrottleDatabase
+import com.rangandale.appthrottler.data.repository.AppRepository
+import com.rangandale.appthrottler.data.repository.ProfileRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn

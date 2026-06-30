@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.vpn.throttle
+package com.rangandale.appthrottler.vpn.throttle
 
 import java.util.concurrent.DelayQueue
 import java.util.concurrent.Delayed

@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.data.local
+package com.rangandale.appthrottler.data.local
 
 import androidx.room.Database
 import androidx.room.RoomDatabase

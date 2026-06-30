@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler
+package com.rangandale.appthrottler
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -6,8 +6,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
-import com.ngdale.appthrottler.ui.navigation.AppThrottlerApp
-import com.ngdale.appthrottler.ui.theme.AppThrotlerTheme
+import com.rangandale.appthrottler.ui.navigation.AppThrottlerApp
+import com.rangandale.appthrottler.ui.theme.AppThrotlerTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint

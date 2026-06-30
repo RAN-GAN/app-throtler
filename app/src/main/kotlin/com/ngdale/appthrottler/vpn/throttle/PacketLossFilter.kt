@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.vpn.throttle
+package com.rangandale.appthrottler.vpn.throttle
 
 import kotlin.random.Random
 

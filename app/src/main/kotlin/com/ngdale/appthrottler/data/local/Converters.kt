@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.data.local
+package com.rangandale.appthrottler.data.local
 
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken

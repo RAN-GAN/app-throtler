@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.presentation.viewmodel
+package com.rangandale.appthrottler.presentation.viewmodel
 
 import android.content.Context
 import android.content.Intent
@@ -6,11 +6,11 @@ import android.os.Build
 import android.net.VpnService
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ngdale.appthrottler.data.repository.ProfileRepository
-import com.ngdale.appthrottler.domain.model.NetworkStats
-import com.ngdale.appthrottler.domain.model.ThrottleConfig
-import com.ngdale.appthrottler.domain.model.ThrottleProfile
-import com.ngdale.appthrottler.vpn.ThrottleVpnService
+import com.rangandale.appthrottler.data.repository.ProfileRepository
+import com.rangandale.appthrottler.domain.model.NetworkStats
+import com.rangandale.appthrottler.domain.model.ThrottleConfig
+import com.rangandale.appthrottler.domain.model.ThrottleProfile
+import com.rangandale.appthrottler.vpn.ThrottleVpnService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -93,11 +93,7 @@ class VpnControlViewModel @Inject constructor(
     fun stopVpn() {
         context.startService(ThrottleVpnService.stopIntent(context))
         _uiState.update {
-            it.copy(
-                isVpnRunning = false,
-                currentConfig = ThrottleConfig(),
-                profileName = "",
-            )
+            it.copy(isVpnRunning = false, vpnPermissionIntent = null)
         }
     }
 

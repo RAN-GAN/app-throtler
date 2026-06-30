@@ -1,26 +1,41 @@
-package com.ngdale.appthrottler.vpn
+package com.rangandale.appthrottler.vpn
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.ngdale.appthrottler.MainActivity
-import com.ngdale.appthrottler.domain.model.ThrottleConfig
+import com.rangandale.appthrottler.MainActivity
+import com.rangandale.appthrottler.domain.model.ThrottleConfig
+import com.rangandale.appthrottler.logging.ThrottleLogger
 
 class ThrottleVpnService : VpnService() {
 
     private var packetProcessor: PacketProcessor? = null
+    private var tunFd: ParcelFileDescriptor? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -31,17 +46,66 @@ class ThrottleVpnService : VpnService() {
 
         val config = intent?.toThrottleConfig() ?: return Service.START_NOT_STICKY
 
+        if (config.selectedApps.isEmpty()) {
+            ThrottleLogger.w(TAG, "No apps selected — VPN not started")
+            stopSelf()
+            return Service.START_NOT_STICKY
+        }
+
         packetProcessor?.stop()
-        packetProcessor = PacketProcessor(config)
+        tunFd?.close()
+        tunFd = null
+
+        val newTunFd = buildTunnel(config)
+        if (newTunFd == null) {
+            ThrottleLogger.e(TAG, "Failed to establish VPN tunnel")
+            stopSelf()
+            return Service.START_NOT_STICKY
+        }
+        tunFd = newTunFd
+
+        ThrottleLogger.i(TAG, "VPN tunnel established — throttling ${config.selectedApps.size} app(s)")
+        config.selectedApps.forEach { ThrottleLogger.i(TAG, "  → $it") }
+
+        packetProcessor = PacketProcessor(config, newTunFd, this)
         packetProcessor?.start()
 
         return Service.START_STICKY
     }
 
     override fun onDestroy() {
+        ThrottleLogger.i(TAG, "VPN stopped")
         packetProcessor?.stop()
         packetProcessor = null
+        tunFd?.close()
+        tunFd = null
         super.onDestroy()
+    }
+
+    private fun buildTunnel(config: ThrottleConfig): ParcelFileDescriptor? {
+        val builder = Builder()
+            .addAddress("10.0.0.2", 32)
+            .addRoute("0.0.0.0", 0)
+            .addDnsServer("8.8.8.8")
+            .addDnsServer("8.8.4.4")
+            .setMtu(MTU)
+            .setSession("AppThrottler")
+            .setBlocking(true)
+
+        for (pkg in config.selectedApps) {
+            try {
+                builder.addAllowedApplication(pkg)
+            } catch (e: PackageManager.NameNotFoundException) {
+                Log.w(TAG, "Package not found, skipping: $pkg")
+            }
+        }
+
+        return try {
+            builder.establish()
+        } catch (e: Exception) {
+            Log.e(TAG, "VpnService.Builder.establish() failed", e)
+            null
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = super.onBind(intent)
@@ -81,8 +145,10 @@ class ThrottleVpnService : VpnService() {
     }
 
     companion object {
-        const val ACTION_START = "com.ngdale.appthrottler.vpn.action.START"
-        const val ACTION_STOP = "com.ngdale.appthrottler.vpn.action.STOP"
+        private const val TAG = "ThrottleVpnService"
+        private const val MTU = 1500
+        const val ACTION_START = "com.rangandale.appthrottler.vpn.action.START"
+        const val ACTION_STOP = "com.rangandale.appthrottler.vpn.action.STOP"
         const val EXTRA_SELECTED_APPS = "extra_selected_apps"
         const val EXTRA_DOWNLOAD_SPEED_KBPS = "extra_download_speed_kbps"
         const val EXTRA_UPLOAD_SPEED_KBPS = "extra_upload_speed_kbps"

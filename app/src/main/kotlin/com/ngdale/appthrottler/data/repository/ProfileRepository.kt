@@ -1,9 +1,9 @@
-package com.ngdale.appthrottler.data.repository
+package com.rangandale.appthrottler.data.repository
 
-import com.ngdale.appthrottler.data.local.Converters
-import com.ngdale.appthrottler.data.local.ThrottleProfileDao
-import com.ngdale.appthrottler.data.local.ThrottleProfileEntity
-import com.ngdale.appthrottler.domain.model.ThrottleProfile
+import com.rangandale.appthrottler.data.local.Converters
+import com.rangandale.appthrottler.data.local.ThrottleProfileDao
+import com.rangandale.appthrottler.data.local.ThrottleProfileEntity
+import com.rangandale.appthrottler.domain.model.ThrottleProfile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 

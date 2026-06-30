@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler
+package com.rangandale.appthrottler
 
 import android.app.Application
 import dagger.hilt.android.HiltAndroidApp

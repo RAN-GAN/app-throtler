@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.ui.theme
+package com.rangandale.appthrottler.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable

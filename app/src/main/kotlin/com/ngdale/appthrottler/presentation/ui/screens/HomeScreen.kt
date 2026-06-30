@@ -1,4 +1,4 @@
-package com.ngdale.appthrottler.presentation.ui.screens
+package com.rangandale.appthrottler.presentation.ui.screens
 
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,8 +24,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.ngdale.appthrottler.domain.model.ThrottleConfig
-import com.ngdale.appthrottler.presentation.viewmodel.VpnControlViewModel
+import com.rangandale.appthrottler.domain.model.ThrottleConfig
+import com.rangandale.appthrottler.presentation.viewmodel.VpnControlViewModel
 
 @Composable
 fun HomeScreen(

@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.ngdale.appthrottler"
+    namespace = "com.rangandale.appthrottler"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.ngdale.appthrottler"
+        applicationId = "com.rangandale.appthrottler"
         minSdk = 21
         targetSdk = 34
         versionCode = 1
