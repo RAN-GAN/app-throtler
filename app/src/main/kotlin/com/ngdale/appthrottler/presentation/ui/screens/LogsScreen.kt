@@ -87,11 +87,15 @@ fun LogsScreen(
 
 @Composable
 private fun LogRow(entry: ThrottleLogger.LogEntry) {
-    val levelColor = when (entry.level) {
-        ThrottleLogger.Level.DEBUG -> Color(0xFF888888)
-        ThrottleLogger.Level.INFO -> Color(0xFF4FC3F7)
-        ThrottleLogger.Level.WARN -> Color(0xFFFFB74D)
-        ThrottleLogger.Level.ERROR -> Color(0xFFEF5350)
+    val isCrash = entry.tag == "CRASH"
+    val levelColor = when {
+        isCrash -> Color(0xFFFF1744)
+        else -> when (entry.level) {
+            ThrottleLogger.Level.DEBUG -> Color(0xFF888888)
+            ThrottleLogger.Level.INFO -> Color(0xFF4FC3F7)
+            ThrottleLogger.Level.WARN -> Color(0xFFFFB74D)
+            ThrottleLogger.Level.ERROR -> Color(0xFFEF5350)
+        }
     }
     val levelLabel = when (entry.level) {
         ThrottleLogger.Level.DEBUG -> "D"
@@ -99,10 +103,12 @@ private fun LogRow(entry: ThrottleLogger.LogEntry) {
         ThrottleLogger.Level.WARN -> "W"
         ThrottleLogger.Level.ERROR -> "E"
     }
+    val rowBg = if (isCrash) Color(0xFF2A0A0A) else Color.Transparent
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(rowBg)
             .padding(horizontal = 4.dp, vertical = 1.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.Top,
@@ -120,7 +126,7 @@ private fun LogRow(entry: ThrottleLogger.LogEntry) {
                 .padding(horizontal = 4.dp, vertical = 1.dp),
         ) {
             Text(
-                text = levelLabel,
+                text = if (isCrash) "!" else levelLabel,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
                 color = levelColor,
@@ -131,7 +137,8 @@ private fun LogRow(entry: ThrottleLogger.LogEntry) {
             text = "${entry.tag}: ${entry.message}",
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
-            color = Color(0xFFDDDDDD),
+            color = if (isCrash) levelColor else Color(0xFFDDDDDD),
+            fontWeight = if (isCrash) FontWeight.Bold else FontWeight.Normal,
             modifier = Modifier.weight(1f),
         )
     }

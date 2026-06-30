@@ -61,6 +61,8 @@ class PacketProcessor(
         while (running.get()) {
             val len = try {
                 tunIn.read(readBuffer)
+            } catch (_: InterruptedException) {
+                break
             } catch (e: Exception) {
                 if (running.get()) Log.e(TAG, "TUN read error", e)
                 break
@@ -76,7 +78,11 @@ class PacketProcessor(
 
     private fun runDrain() {
         while (running.get()) {
-            val packet = latencyQueue.poll(100) ?: continue
+            val packet = try {
+                latencyQueue.poll(100)
+            } catch (_: InterruptedException) {
+                break
+            } ?: continue
             val protocol = extractProtocol(packet) ?: continue
             try {
                 when (protocol) {

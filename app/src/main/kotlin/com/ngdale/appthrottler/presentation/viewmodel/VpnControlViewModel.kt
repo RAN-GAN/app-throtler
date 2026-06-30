@@ -6,6 +6,7 @@ import android.os.Build
 import android.net.VpnService
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.rangandale.appthrottler.data.repository.CurrentConfigRepository
 import com.rangandale.appthrottler.data.repository.ProfileRepository
 import com.rangandale.appthrottler.domain.model.NetworkStats
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
@@ -33,9 +34,10 @@ data class VpnUiState(
 class VpnControlViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val profileRepository: ProfileRepository,
+    private val currentConfigRepository: CurrentConfigRepository,
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(VpnUiState())
+    private val _uiState = MutableStateFlow(VpnUiState(currentConfig = currentConfigRepository.load()))
     val uiState: StateFlow<VpnUiState> = _uiState.asStateFlow()
 
     init {
@@ -132,19 +134,16 @@ class VpnControlViewModel @Inject constructor(
     }
 
     fun loadProfile(profile: ThrottleProfile) {
-        _uiState.update {
-            it.copy(
-                currentConfig = ThrottleConfig(
-                    selectedApps = profile.selectedAppPackages,
-                    downloadSpeedKbps = profile.downloadSpeedKbps,
-                    uploadSpeedKbps = profile.uploadSpeedKbps,
-                    latencyMs = profile.latencyMs,
-                    jitterMs = profile.jitterMs,
-                    packetLossPercent = profile.packetLossPercent,
-                ),
-                profileName = profile.name,
-            )
-        }
+        val config = ThrottleConfig(
+            selectedApps = profile.selectedAppPackages,
+            downloadSpeedKbps = profile.downloadSpeedKbps,
+            uploadSpeedKbps = profile.uploadSpeedKbps,
+            latencyMs = profile.latencyMs,
+            jitterMs = profile.jitterMs,
+            packetLossPercent = profile.packetLossPercent,
+        )
+        currentConfigRepository.save(config)
+        _uiState.update { it.copy(currentConfig = config, profileName = profile.name) }
     }
 
     fun applyPreset(profile: ThrottleProfile) {
@@ -193,7 +192,9 @@ class VpnControlViewModel @Inject constructor(
 
     private inline fun updateConfig(transform: (ThrottleConfig) -> ThrottleConfig) {
         _uiState.update { state ->
-            state.copy(currentConfig = transform(state.currentConfig))
+            val newConfig = transform(state.currentConfig)
+            currentConfigRepository.save(newConfig)
+            state.copy(currentConfig = newConfig)
         }
     }
 }

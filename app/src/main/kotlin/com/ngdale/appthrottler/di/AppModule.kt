@@ -2,6 +2,7 @@ package com.rangandale.appthrottler.di
 
 import android.content.Context
 import androidx.room.Room
+import com.google.gson.Gson
 import com.rangandale.appthrottler.data.local.ThrottleDatabase
 import com.rangandale.appthrottler.data.repository.AppRepository
 import com.rangandale.appthrottler.data.repository.ProfileRepository
@@ -15,6 +16,10 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    fun provideGson(): Gson = Gson()
 
     @Provides
     @Singleton

@@ -1,5 +1,6 @@
 package com.rangandale.appthrottler.logging
 
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -11,6 +12,8 @@ import java.util.Locale
 object ThrottleLogger {
 
     private const val MAX_ENTRIES = 500
+    private const val LOGCAT_TAG = "AppThrottler"
+
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
@@ -26,6 +29,13 @@ object ThrottleLogger {
     private fun append(level: Level, tag: String, message: String) {
         val entry = LogEntry(System.currentTimeMillis(), level, tag, message)
         _entries.update { list -> (list + entry).takeLast(MAX_ENTRIES) }
+        // Mirror to logcat so `adb logcat -s AppThrottler` captures everything
+        when (level) {
+            Level.DEBUG -> Log.d(LOGCAT_TAG, "[$tag] $message")
+            Level.INFO  -> Log.i(LOGCAT_TAG, "[$tag] $message")
+            Level.WARN  -> Log.w(LOGCAT_TAG, "[$tag] $message")
+            Level.ERROR -> Log.e(LOGCAT_TAG, "[$tag] $message")
+        }
     }
 
     enum class Level { DEBUG, INFO, WARN, ERROR }
