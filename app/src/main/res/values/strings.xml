@@ -5,4 +5,7 @@
     <string name="notification_title">App Throttler is running</string>
     <string name="notification_text">Selected apps are being throttled</string>
     <string name="notification_stop">Stop</string>
+    <string name="tile_label">Throttle</string>
+    <string name="shortcut_start">Start throttling</string>
+    <string name="shortcut_stop">Stop throttling</string>
 </resources>

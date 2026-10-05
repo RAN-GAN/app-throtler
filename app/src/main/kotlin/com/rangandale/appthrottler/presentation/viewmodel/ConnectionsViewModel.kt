@@ -118,6 +118,34 @@ class ConnectionsViewModel @Inject constructor(
         }
     }
 
+    /** Writes the connections currently listed (after filters) as CSV. */
+    fun exportCsv(destination: Uri) {
+        val rows = uiState.value.connections
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                context.contentResolver.openOutputStream(destination)!!.bufferedWriter().use { out ->
+                    out.write("app,package,protocol,host,address,port,status,attempts,bytes_received,bytes_sent,started,ended\n")
+                    for (c in rows) {
+                        val fields = listOf(
+                            c.appLabel, c.packageName.orEmpty(), c.protocol,
+                            if (c.destination == c.address) "" else c.destination, c.address, c.port.toString(),
+                            c.state.name.lowercase(), c.attempts.toString(), c.bytesDown.toString(), c.bytesUp.toString(),
+                            isoTime(c.startMs), if (c.endMs > 0) isoTime(c.endMs) else "",
+                        )
+                        out.write(fields.joinToString(",") { csvField(it) })
+                        out.write("\n")
+                    }
+                }
+                ThrottleLogger.i(TAG, "Exported ${rows.size} connection(s) as CSV")
+            } catch (e: Exception) {
+                ThrottleLogger.e(TAG, "CSV export failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun isoTime(epochMs: Long): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date(epochMs))
+
     fun stopCapture() {
         viewModelScope.launch(Dispatchers.IO) { PacketCapture.stop() }
     }
@@ -149,8 +177,12 @@ class ConnectionsViewModel @Inject constructor(
             address.contains(query) ||
             port.toString() == query
 
-    private companion object {
-        const val TAG = "Capture"
-        const val REFRESH_MS = 1_000L
+    companion object {
+        private const val TAG = "Traffic"
+        private const val REFRESH_MS = 1_000L
+
+        /** Quotes a CSV field when it needs it, doubling embedded quotes. */
+        internal fun csvField(value: String): String =
+            if (value.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + value.replace("\"", "\"\"") + "\"" else value
     }
 }

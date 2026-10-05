@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_throttle_tinted"
+        android:shortcutId="start"
+        android:shortcutShortLabel="@string/shortcut_start">
+        <intent
+            android:action="com.rangandale.appthrottler.action.START"
+            android:targetClass="com.rangandale.appthrottler.control.ControlActivity"
+            android:targetPackage="com.rangandale.appthrottler" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_throttle_tinted"
+        android:shortcutId="stop"
+        android:shortcutShortLabel="@string/shortcut_stop">
+        <intent
+            android:action="com.rangandale.appthrottler.action.STOP"
+            android:targetClass="com.rangandale.appthrottler.control.ControlActivity"
+            android:targetPackage="com.rangandale.appthrottler" />
+    </shortcut>
+</shortcuts>

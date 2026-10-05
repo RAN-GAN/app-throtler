@@ -1,5 +1,7 @@
 package com.rangandale.appthrottler.presentation.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -121,6 +123,9 @@ fun SettingsScreen(
             onRemove = viewModel::removeBlockedDomain,
         )
 
+        HorizontalDivider()
+        ShareSetup(onExport = viewModel::exportSetup, onImport = viewModel::importSetup)
+
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(onClick = { showSaveDialog = true }, modifier = Modifier.weight(1f)) {
                 Text("Save as profile")
@@ -151,6 +156,30 @@ fun SettingsScreen(
                 viewModel.saveCurrentProfile(name)
             },
         )
+    }
+}
+
+@Composable
+private fun ShareSetup(onExport: (android.net.Uri) -> Unit, onImport: (android.net.Uri) -> Unit) {
+    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) onExport(uri)
+    }
+    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) onImport(uri)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(text = "Share this setup", style = MaterialTheme.typography.titleSmall)
+        Text(
+            text = "Saves the settings, app rules, blocked domains, profiles and scenarios to a file. " +
+                "Importing replaces the current settings and rules and adds the file's profiles and scenarios.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = { exporter.launch("app-throttler-setup.json") }) { Text("Export") }
+            OutlinedButton(onClick = { importer.launch(arrayOf("application/json", "text/plain", "*/*")) }) { Text("Import") }
+        }
     }
 }
 

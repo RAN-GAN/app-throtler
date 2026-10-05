@@ -2,15 +2,21 @@ package com.rangandale.appthrottler.presentation.viewmodel
 
 import android.content.Context
 import android.content.Intent
-import android.net.VpnService
-import android.os.Build
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
+import com.rangandale.appthrottler.control.VpnController
 import com.rangandale.appthrottler.data.repository.CurrentConfigRepository
 import com.rangandale.appthrottler.data.repository.ProfileRepository
+import com.rangandale.appthrottler.data.repository.ScenarioRepository
 import com.rangandale.appthrottler.data.repository.StatsRepository
 import com.rangandale.appthrottler.domain.model.AppRule
 import com.rangandale.appthrottler.domain.model.NetworkStats
+import com.rangandale.appthrottler.domain.model.PresetProfiles
+import com.rangandale.appthrottler.domain.model.Scenario
+import com.rangandale.appthrottler.domain.model.ScenarioStatus
+import com.rangandale.appthrottler.domain.model.asStep
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
 import com.rangandale.appthrottler.domain.model.ThrottleParams
 import com.rangandale.appthrottler.domain.model.ThrottleProfile
@@ -41,6 +47,12 @@ data class VpnUiState(
     val profileName: String = "",
     val savedProfiles: List<ThrottleProfile> = emptyList(),
     val networkStats: NetworkStats = NetworkStats(),
+    /** Recent transfer rates, oldest first, for the Home chart. */
+    val rateHistory: List<RateSample> = emptyList(),
+    /** The scenario step currently overriding the settings, if any. */
+    val scenario: ScenarioStatus? = null,
+    /** Scenarios the user created; built-in ones are listed separately. */
+    val customScenarios: List<Scenario> = emptyList(),
     /** Non-null while the system VPN consent dialog needs to be shown. */
     val vpnPermissionIntent: Intent? = null,
     /** One-shot message for the snackbar. */
@@ -50,12 +62,26 @@ data class VpnUiState(
     val hasUnappliedChanges: Boolean get() = activeConfig != null && activeConfig != currentConfig
 }
 
+data class RateSample(val downloadBytesPerSecond: Long, val uploadBytesPerSecond: Long)
+
+/** Everything a tester would hand to a colleague to reproduce a setup. */
+data class SetupBundle(
+    val version: Int = 1,
+    val config: ThrottleConfig = ThrottleConfig(),
+    val profileName: String = "",
+    val profiles: List<ThrottleProfile> = emptyList(),
+    val scenarios: List<Scenario> = emptyList(),
+)
+
 @HiltViewModel
 class VpnControlViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val profileRepository: ProfileRepository,
     private val currentConfigRepository: CurrentConfigRepository,
     private val statsRepository: StatsRepository,
+    private val scenarioRepository: ScenarioRepository,
+    private val controller: VpnController,
+    private val gson: Gson,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(VpnUiState())
@@ -76,7 +102,10 @@ class VpnControlViewModel @Inject constructor(
                 _uiState.update { it.copy(activeConfig = active) }
                 if (active != null) {
                     statsRepository.observe().collect { stats ->
-                        _uiState.update { it.copy(networkStats = stats) }
+                        _uiState.update {
+                            val sample = RateSample(stats.downloadBytesPerSecond, stats.uploadBytesPerSecond)
+                            it.copy(networkStats = stats, rateHistory = (it.rateHistory + sample).takeLast(HISTORY_SAMPLES))
+                        }
                     }
                 } else {
                     // Keep the session totals on screen, but nothing is flowing any more.
@@ -96,6 +125,12 @@ class VpnControlViewModel @Inject constructor(
                 _uiState.update { it.copy(savedProfiles = profiles) }
             }
         }
+        viewModelScope.launch {
+            ThrottleVpnService.scenario.collect { status -> _uiState.update { it.copy(scenario = status) } }
+        }
+        viewModelScope.launch {
+            scenarioRepository.scenarios.collect { scenarios -> _uiState.update { it.copy(customScenarios = scenarios) } }
+        }
     }
 
     /** Starts the VPN with the current config, or re-applies it if the VPN is already running. */
@@ -105,7 +140,7 @@ class VpnControlViewModel @Inject constructor(
             showMessage("Select at least one app to throttle")
             return
         }
-        val permissionIntent = VpnService.prepare(context)
+        val permissionIntent = controller.consentIntent()
         if (permissionIntent != null) {
             _uiState.update { it.copy(vpnPermissionIntent = permissionIntent) }
             return
@@ -128,9 +163,111 @@ class VpnControlViewModel @Inject constructor(
 
     fun stopVpn() {
         startWatchdog?.cancel()
-        // Deliver ACTION_STOP through onStartCommand so the service tears down in order.
         ThrottleLogger.i(TAG, "Stop requested")
-        context.startService(ThrottleVpnService.stopIntent(context))
+        controller.stop()
+    }
+
+    // --- Network events and scenarios (only meaningful while the VPN runs) ---
+
+    fun runScenario(scenario: Scenario) {
+        if (!uiState.value.isVpnRunning) {
+            showMessage("Start the VPN first")
+            return
+        }
+        controller.runScenario(scenario)
+    }
+
+    /** Puts every routed app on [profile] for [seconds], then returns to the configured values. */
+    fun runEvent(profile: ThrottleProfile, seconds: Int) =
+        runScenario(Scenario("${profile.name} for $seconds s", listOf(profile.asStep(seconds))))
+
+    fun goOffline(seconds: Int) = runEvent(PresetProfiles.offline, seconds)
+
+    fun cancelScenario() = controller.cancelScenario()
+
+    fun resetConnections() {
+        controller.resetConnections()
+        showMessage("All connections were reset")
+    }
+
+    fun saveScenario(scenario: Scenario) {
+        if (scenario.name.isBlank() || scenario.steps.isEmpty()) return
+        scenarioRepository.save(scenario.copy(name = scenario.name.trim()))
+        showMessage("Saved scenario \"${scenario.name.trim()}\"")
+    }
+
+    fun deleteScenario(scenario: Scenario) {
+        scenarioRepository.delete(scenario.name)
+        showMessage("Deleted scenario \"${scenario.name}\"")
+    }
+
+    // --- Rules created from the connections list ---
+
+    /** Blocks the app behind a connection, if it is one of the routed apps. */
+    fun blockApp(packageName: String, label: String) {
+        if (packageName !in uiState.value.currentConfig.selectedApps) {
+            showMessage("$label is not one of the selected apps")
+            return
+        }
+        updateAppRule(packageName) { it.copy(block = true, blockOnWifi = true, blockOnMobile = true, onlyWhenScreenOff = false) }
+        showMessage(if (uiState.value.isVpnRunning) "$label will be blocked once you press Apply" else "$label will be blocked")
+    }
+
+    fun blockHost(host: String) {
+        if (addBlockedDomain(host)) {
+            showMessage(if (uiState.value.isVpnRunning) "$host will be blocked once you press Apply" else "$host will be blocked")
+        }
+    }
+
+    // --- Export and import ---
+
+    fun exportSetup(destination: Uri) {
+        val state = uiState.value
+        val bundle = SetupBundle(
+            config = state.currentConfig,
+            profileName = state.profileName,
+            profiles = state.savedProfiles,
+            scenarios = state.customScenarios,
+        )
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(destination)!!.use { it.write(gson.toJson(bundle).toByteArray()) }
+                }.isSuccess
+            }
+            showMessage(if (ok) "Setup exported" else "Could not write the file")
+        }
+    }
+
+    /** Replaces the settings, rules and scenarios with the file's, and adds its profiles. */
+    fun importSetup(source: Uri) {
+        viewModelScope.launch {
+            val bundle = withContext(Dispatchers.IO) {
+                runCatching {
+                    val json = context.contentResolver.openInputStream(source)!!.use { it.readBytes().toString(Charsets.UTF_8) }
+                    gson.fromJson(json, SetupBundle::class.java)
+                }.getOrNull()
+            }
+            // Gson leaves fields that are missing from the file as null, whatever Kotlin says.
+            @Suppress("SENSELESS_COMPARISON")
+            if (bundle == null || bundle.config == null || bundle.config.selectedApps == null) {
+                showMessage("That file is not an App Throttler setup")
+                return@launch
+            }
+            val existing = uiState.value.savedProfiles.associateBy { it.name }
+            (bundle.profiles as List<ThrottleProfile>?).orEmpty().forEach { profile ->
+                profileRepository.save(profile.copy(id = existing[profile.name]?.id ?: 0L, isPreset = false))
+            }
+            scenarioRepository.replaceAll(
+                (uiState.value.customScenarios.associateBy { it.name } + (bundle.scenarios as List<Scenario>?).orEmpty().associateBy { it.name }).values.toList(),
+            )
+            val config = bundle.config.copy(
+                appRules = (bundle.config.appRules as List<AppRule>?).orEmpty(),
+                blockedDomains = (bundle.config.blockedDomains as List<String>?).orEmpty(),
+            )
+            updateState { it.copy(currentConfig = config, profileName = (bundle.profileName as String?).orEmpty()) }
+            showMessage("Setup imported")
+        }
     }
 
     fun messageShown() {
@@ -270,15 +407,7 @@ class VpnControlViewModel @Inject constructor(
     }
 
     private fun startThrottleService(config: ThrottleConfig) {
-        val serviceIntent = ThrottleVpnService.startIntent(context, config)
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
-        } catch (e: Exception) {
-            ThrottleLogger.e(TAG, "Could not start VPN service: ${e.message}")
+        if (!controller.start(config)) {
             showMessage("Could not start the VPN — see Logs")
             return
         }
@@ -310,5 +439,6 @@ class VpnControlViewModel @Inject constructor(
     private companion object {
         const val TAG = "VpnControlViewModel"
         const val START_TIMEOUT_MS = 5_000L
+        const val HISTORY_SAMPLES = 60
     }
 }

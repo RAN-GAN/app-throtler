@@ -7,6 +7,8 @@ import kotlin.random.Random
 
 class DelayedPacket(
     val payload: ByteArray,
+    /** Free-form value carried with the packet (the forwarders use it for the owning UID). */
+    val tag: Int,
     private val releaseAtMs: Long,
     private val sequence: Long,
     private val clockMs: () -> Long,
@@ -43,16 +45,26 @@ class LatencyQueue(
     private var nextSequence = 0L
 
     @Synchronized
-    fun enqueue(data: ByteArray, baseMs: Int, jitterMs: Int, lane: Lane = defaultLane, extraDelayMs: Long = 0L) {
+    fun enqueue(
+        data: ByteArray,
+        baseMs: Int,
+        jitterMs: Int,
+        lane: Lane = defaultLane,
+        extraDelayMs: Long = 0L,
+        tag: Int = 0,
+    ) {
         val jitter = if (jitterMs <= 0) 0L else Random.nextLong(-jitterMs.toLong(), jitterMs.toLong() + 1)
         val delay = (baseMs + jitter).coerceAtLeast(0L) + extraDelayMs
         val releaseAt = maxOf(lane.lastReleaseAtMs, clockMs() + delay)
         lane.lastReleaseAtMs = releaseAt
-        queue.offer(DelayedPacket(data, releaseAt, nextSequence++, clockMs))
+        queue.offer(DelayedPacket(data, tag, releaseAt, nextSequence++, clockMs))
     }
 
     @Throws(InterruptedException::class)
-    fun poll(timeoutMs: Long): ByteArray? = queue.poll(timeoutMs, TimeUnit.MILLISECONDS)?.payload
+    fun poll(timeoutMs: Long): ByteArray? = pollPacket(timeoutMs)?.payload
+
+    @Throws(InterruptedException::class)
+    fun pollPacket(timeoutMs: Long): DelayedPacket? = queue.poll(timeoutMs, TimeUnit.MILLISECONDS)
 
     fun clear() = queue.clear()
 }

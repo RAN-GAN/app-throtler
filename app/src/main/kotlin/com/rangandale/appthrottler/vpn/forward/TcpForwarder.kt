@@ -14,8 +14,8 @@ import com.rangandale.appthrottler.vpn.flow.FlowRecord
 import com.rangandale.appthrottler.vpn.flow.FlowRegistry
 import com.rangandale.appthrottler.vpn.flow.FlowState
 import com.rangandale.appthrottler.vpn.flow.HostSniffer
+import com.rangandale.appthrottler.vpn.throttle.PacketLossFilter
 import com.rangandale.appthrottler.vpn.throttle.ShaperSet
-import com.rangandale.appthrottler.vpn.throttle.TokenBucket
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -39,7 +39,9 @@ import kotlin.random.Random
  * retransmits anything dropped by the loss filter), honours the client's receive window, and
  * advertises its own window from the amount of data still waiting to be written to the server.
  * Download throttling is plain backpressure — bytes are only read from the server socket when
- * the owning app's download bucket has tokens.
+ * the owning app's download bucket has tokens. Because data towards the client is never
+ * retransmitted, download packet loss is not produced by dropping segments: a "lost" segment
+ * instead stalls the connection for about as long as a real retransmission would take.
  *
  * Each connection is attributed to the app that opened it, which decides whether it is refused
  * ([FlowPolicy]) and which limits apply ([ShaperSet]), and is reported to the [FlowRegistry].
@@ -53,9 +55,9 @@ class TcpForwarder(
     private val shapers: ShaperSet,
     private val policy: FlowPolicy,
     private val owners: FlowOwners,
-    mtu: Int,
+    private val mtu: Int,
 ) {
-    data class TcpKey(val srcIp: Int, val srcPort: Int, val dstIp: Int, val dstPort: Int)
+    data class TcpKey(val srcIp: Long, val srcPort: Int, val dstIp: Long, val dstPort: Int)
 
     private enum class State {
         /** Waiting for the real server to accept; the client's SYN is not answered yet. */
@@ -77,12 +79,14 @@ class TcpForwarder(
         var clientWindow: Int,
         val uid: Int,
         val record: FlowRecord,
-        val downloadBucket: TokenBucket,
     ) {
         var state = State.CONNECTING
 
         /** Whether the first client bytes were already inspected for a host name. */
         var sniffed = false
+
+        /** Until when server data is held back to imitate a lost segment being retransmitted. */
+        var lossStallUntilMs = 0L
         var closed = false
 
         /** Next sequence number expected from the client. */
@@ -135,24 +139,29 @@ class TcpForwarder(
         runCatching { selector.close() }
     }
 
+    /** Resets every open connection, as when the device loses its network. */
+    fun resetAll() {
+        for (conn in connections.values) synchronized(conn) { abort(conn) }
+    }
+
     // ---------------------------------------------------------------------------------------
     // Client → server (caller's thread)
     // ---------------------------------------------------------------------------------------
 
-    /** Handles one outbound IPv4/TCP packet read from the TUN device. */
+    /** Handles one outbound TCP packet (over IPv4 or IPv6) read from the TUN device. */
     fun forward(packet: ByteArray) {
-        val ihl = (packet[0].toInt() and 0x0F) * 4
+        val ihl = IpPacket.headerLength(packet)
         if (ihl < IpPacket.IP_HEADER_LEN || packet.size < ihl + IpPacket.TCP_HEADER_LEN) return
         val bb = ByteBuffer.wrap(packet)
-        val totalLen = minOf(bb.getShort(2).toInt() and 0xFFFF, packet.size)
+        val totalLen = minOf(IpPacket.totalLength(packet), packet.size)
         val headerLen = ((packet[ihl + 12].toInt() and 0xF0) ushr 4) * 4
         val dataStart = ihl + headerLen
         if (headerLen < IpPacket.TCP_HEADER_LEN || dataStart > totalLen) return
 
         val key = TcpKey(
-            srcIp = bb.getInt(12),
+            srcIp = IpPacket.sourceOf(packet),
             srcPort = bb.getShort(ihl).toInt() and 0xFFFF,
-            dstIp = bb.getInt(16),
+            dstIp = IpPacket.destinationOf(packet),
             dstPort = bb.getShort(ihl + 2).toInt() and 0xFFFF,
         )
         val seq = bb.getInt(ihl + 4)
@@ -168,7 +177,8 @@ class TcpForwarder(
         }
         if (flags and TCP_SYN != 0 && flags and TCP_ACK == 0) {
             val clientMss = parseMss(packet, ihl + IpPacket.TCP_HEADER_LEN, dataStart)
-            handleSyn(key, seq, window, minOf(clientMss, maxSegment))
+            // The larger IPv6 header leaves less room for data in each segment.
+            handleSyn(key, seq, window, minOf(clientMss, mtu - ihl - IpPacket.TCP_HEADER_LEN))
             return
         }
 
@@ -219,7 +229,7 @@ class TcpForwarder(
         }
 
         val record = FlowRegistry.open(IpPacket.PROTO_TCP, uid, key.srcPort, key.dstIp, key.dstPort)
-        val conn = Connection(key, channel, clientIsn, mss, window, uid, record, shapers.forUid(uid).download)
+        val conn = Connection(key, channel, clientIsn, mss, window, uid, record)
         connections[key] = conn
         requestInterestUpdate(conn)
     }
@@ -438,24 +448,30 @@ class TcpForwarder(
         val room = sendRoom(conn)
         if (room <= 0) return true // syncInterest() pauses reads until the client ACKs
 
+        val shaper = shapers.forUid(conn.uid)
+        val now = System.currentTimeMillis()
+        // Offline, or waiting out a simulated retransmission: leave the data in the socket.
+        if (shaper.isOffline || now < conn.lossStallUntilMs) return false
+        val downloadBucket = shaper.download
+
         // Wait until the bucket covers a full segment: at low rates, reading whatever trickles
         // in would produce tiny segments whose headers outweigh their payload.
-        val granted = conn.downloadBucket.consumeUpTo(minOf(room, buf.capacity()), minBytes = conn.mss)
+        val granted = downloadBucket.consumeUpTo(minOf(room, buf.capacity()), minBytes = conn.mss)
         if (granted <= 0) return false
         // ...and keep to whole segments, leaving the remainder in the bucket for the next one.
         val allowed = if (granted > conn.mss) granted - granted % conn.mss else granted
-        conn.downloadBucket.refund(granted - allowed)
+        downloadBucket.refund(granted - allowed)
 
         buf.clear()
         buf.limit(allowed)
         val read = try {
             conn.channel.read(buf)
         } catch (e: IOException) {
-            conn.downloadBucket.refund(allowed)
+            downloadBucket.refund(allowed)
             abort(conn)
             return true
         }
-        conn.downloadBucket.refund(allowed - read.coerceAtLeast(0))
+        downloadBucket.refund(allowed - read.coerceAtLeast(0))
 
         if (read < 0) {
             onServerClosed(conn)
@@ -469,6 +485,9 @@ class TcpForwarder(
                 send(conn, if (last) TCP_PSH or TCP_ACK else TCP_ACK, data, offset, len)
                 conn.sndNxt += len
                 offset += len
+                if (PacketLossFilter.shouldDrop(shaper.params.packetLossPercent)) {
+                    conn.lossStallUntilMs = now + maxOf(MIN_LOSS_STALL_MS, 2L * shaper.params.latencyMs)
+                }
             }
         }
         return true
@@ -578,7 +597,7 @@ class TcpForwarder(
     }
 
     private fun emit(conn: Connection, packet: ByteArray) {
-        tun.write(packet, conn.uid)
+        tun.deliver(packet, conn.uid, shapers.forUid(conn.uid))
         conn.record.addDown(packet.size)
     }
 
@@ -648,6 +667,9 @@ class TcpForwarder(
         private const val SEGMENTS_PER_READ = 16
         private const val SELECT_TIMEOUT_MS = 250L
         private const val OUT_OF_TOKENS_SLEEP_MS = 5L
+
+        /** A lost segment costs at least a fast retransmit, even on a zero-latency link. */
+        private const val MIN_LOSS_STALL_MS = 200L
         private const val HOUSEKEEPING_INTERVAL_MS = 1_000L
         private const val PROBE_INTERVAL_MS = 1_000L
         private const val IDLE_TIMEOUT_MS = 60 * 60_000L

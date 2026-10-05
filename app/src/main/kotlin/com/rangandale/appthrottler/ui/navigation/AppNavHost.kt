@@ -143,6 +143,8 @@ fun AppThrottlerApp(modifier: Modifier = Modifier) {
                     connectionsViewModel = connectionsViewModel,
                     logsViewModel = logsViewModel,
                     vpnRunning = uiState.isVpnRunning,
+                    onBlockApp = vpnViewModel::blockApp,
+                    onBlockHost = vpnViewModel::blockHost,
                 )
             }
         }

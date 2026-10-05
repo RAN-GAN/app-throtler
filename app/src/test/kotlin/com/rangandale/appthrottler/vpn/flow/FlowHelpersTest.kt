@@ -99,7 +99,7 @@ class FlowHelpersTest {
 
         val parsed = DnsMessage.parseReply(reply, 0, reply.size)!!
         assertEquals("a.example.com", parsed.name)
-        assertEquals(listOf(0x5DB8D822, 0x0A000001), parsed.addresses)
+        assertEquals(listOf(0x5DB8D822L, 0x0A000001L), parsed.addresses)
         assertEquals("a.example.com", DnsMessage.questionName(reply, 0, reply.size))
 
         assertNull(DnsMessage.parseReply(reply, 0, 10))

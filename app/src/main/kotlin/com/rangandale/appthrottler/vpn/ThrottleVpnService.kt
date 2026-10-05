@@ -15,6 +15,8 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.util.Log
@@ -23,6 +25,8 @@ import androidx.core.content.ContextCompat
 import com.google.gson.Gson
 import com.rangandale.appthrottler.MainActivity
 import com.rangandale.appthrottler.R
+import com.rangandale.appthrottler.domain.model.Scenario
+import com.rangandale.appthrottler.domain.model.ScenarioStatus
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
 import com.rangandale.appthrottler.logging.ThrottleLogger
 import com.rangandale.appthrottler.vpn.capture.PacketCapture
@@ -36,6 +40,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
@@ -46,6 +51,10 @@ class ThrottleVpnService : VpnService() {
 
     /** The running tunnel's rules; network and screen changes are pushed into it. */
     @Volatile private var policy: FlowPolicy? = null
+    private var shapers: ShaperSet? = null
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var scenarioStep: Runnable? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val screenReceiver = object : BroadcastReceiver() {
@@ -75,6 +84,26 @@ class ThrottleVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Commands for a running tunnel. Without one they have nothing to act on and fall
+        // through to the teardown below, which also takes the service out of the foreground.
+        if (packetProcessor != null) {
+            when (intent?.action) {
+                ACTION_SCENARIO -> {
+                    scenarioOf(intent)?.let(::runScenario)
+                    return Service.START_NOT_STICKY
+                }
+                ACTION_CANCEL_SCENARIO -> {
+                    cancelScenario(log = true)
+                    return Service.START_NOT_STICKY
+                }
+                ACTION_RESET_CONNECTIONS -> {
+                    packetProcessor?.resetConnections()
+                    ThrottleLogger.i(TAG, "All connections reset")
+                    return Service.START_NOT_STICKY
+                }
+            }
+        }
+
         // A null intent or a foreign action (e.g. a system restart) carries no config to run with.
         val config = intent?.takeIf { it.action == ACTION_START }?.let(::configOf)
         if (config == null) {
@@ -101,17 +130,18 @@ class ThrottleVpnService : VpnService() {
         val uids = uidsOf(config.selectedApps)
         val rulesByUid = config.appRules.mapNotNull { rule -> uids[rule.packageName]?.let { it to rule } }.toMap()
         val newPolicy = FlowPolicy(rulesByUid, config.blockedDomains)
-        val shapers = ShaperSet(
+        val newShapers = ShaperSet(
             default = config.params,
             overridesByUid = rulesByUid.mapNotNull { (uid, rule) -> rule.throttle?.let { uid to it } }.toMap(),
         )
         policy = newPolicy
+        shapers = newShapers
         watchDeviceState(newPolicy)
         if (!canAttributeFlows && (newPolicy.hasRules || rulesByUid.isNotEmpty())) {
             ThrottleLogger.w(TAG, "Per-app rules need Android 10 or newer — they are ignored on this device")
         }
 
-        packetProcessor = PacketProcessor(config, newTunFd, this, shapers, newPolicy, FlowOwners(::ownerUid), MTU)
+        packetProcessor = PacketProcessor(config, newTunFd, this, newShapers, newPolicy, FlowOwners(::ownerUid), MTU)
             .also { it.start() }
         _activeConfig.value = config // reported only once the tunnel is really up
 
@@ -129,7 +159,44 @@ class ThrottleVpnService : VpnService() {
         super.onDestroy()
     }
 
+    /** Steps through [scenario], putting every routed app on each step's conditions in turn. */
+    private fun runScenario(scenario: Scenario) {
+        cancelScenario(log = false)
+        val steps = scenario.steps.filter { it.seconds > 0 }
+        if (steps.isEmpty()) return
+        ThrottleLogger.i(TAG, "Scenario \"${scenario.name}\" started (${steps.size} step(s))")
+
+        fun enter(index: Int) {
+            val target = shapers ?: return
+            if (index >= steps.size) {
+                target.overrideAll(null)
+                scenarioStep = null
+                _scenario.value = null
+                ThrottleLogger.i(TAG, "Scenario \"${scenario.name}\" finished — back to the session settings")
+                return
+            }
+            val step = steps[index]
+            target.overrideAll(step.params)
+            val durationMs = step.seconds * 1000L
+            _scenario.value = ScenarioStatus(scenario.name, step.label, index, steps.size, System.currentTimeMillis() + durationMs)
+            ThrottleLogger.i(TAG, "Scenario step ${index + 1}/${steps.size}: ${step.label} for ${step.seconds} s")
+            scenarioStep = Runnable { enter(index + 1) }.also { handler.postDelayed(it, durationMs) }
+        }
+        enter(0)
+    }
+
+    private fun cancelScenario(log: Boolean) {
+        val wasRunning = scenarioStep != null
+        scenarioStep?.let(handler::removeCallbacks)
+        scenarioStep = null
+        shapers?.overrideAll(null)
+        _scenario.value = null
+        if (log && wasRunning) ThrottleLogger.i(TAG, "Scenario cancelled — back to the session settings")
+    }
+
     private fun stopTunnel() {
+        cancelScenario(log = false)
+        shapers = null
         unwatchDeviceState()
         policy = null
         packetProcessor?.stop()
@@ -161,10 +228,19 @@ class ThrottleVpnService : VpnService() {
             .addAddress(TUN_ADDRESS, 32)
             .addRoute("0.0.0.0", 0)
             .setMtu(MTU)
+
+        // Tunnel IPv6 only where the real network has it. Without these lines Android blocks
+        // IPv6 for the routed apps, which then use IPv4 — the right outcome on an IPv4-only network.
+        val ipv6 = networkHasIpv6()
+        if (ipv6) {
+            builder.addAddress(TUN_ADDRESS_V6, 128).addRoute("::", 0)
+        }
+        builder
             .setSession(getString(R.string.app_name))
             .setBlocking(true)
 
-        dnsServers().forEach { builder.addDnsServer(it) }
+        dnsServers(ipv6).forEach { builder.addDnsServer(it) }
+        ThrottleLogger.d(TAG, if (ipv6) "Tunnelling IPv4 and IPv6" else "Tunnelling IPv4 only (the network has no IPv6)")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // VPNs are metered by default, which makes apps behave differently than on Wi-Fi.
@@ -196,15 +272,15 @@ class ThrottleVpnService : VpnService() {
 
     /**
      * The DNS servers of the current network (so captive or private resolvers keep working),
-     * followed by public fallbacks. Only IPv4 is tunnelled.
+     * followed by public fallbacks. IPv6 resolvers are only usable when IPv6 is tunnelled.
      */
-    private fun dnsServers(): List<InetAddress> {
+    private fun dnsServers(ipv6: Boolean): List<InetAddress> {
         val servers = LinkedHashSet<InetAddress>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                 cm.getLinkProperties(cm.activeNetwork)?.dnsServers
-                    ?.filterTo(servers) { it is Inet4Address && !it.isLoopbackAddress }
+                    ?.filterTo(servers) { (ipv6 || it is Inet4Address) && !it.isLoopbackAddress && !it.isLinkLocalAddress }
             } catch (e: Exception) {
                 Log.w(TAG, "Could not read system DNS servers", e)
             }
@@ -279,6 +355,20 @@ class ThrottleVpnService : VpnService() {
         networkCallback = null
     }
 
+    /** Whether the active network has a routable (not link-local) IPv6 address. */
+    private fun networkHasIpv6(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.getLinkProperties(cm.activeNetwork)?.linkAddresses.orEmpty().any {
+                val address = it.address
+                address is Inet6Address && !address.isLinkLocalAddress && !address.isLoopbackAddress
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun buildNotification() = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_stat_throttle)
         .setContentTitle(getString(R.string.notification_title))
@@ -322,10 +412,15 @@ class ThrottleVpnService : VpnService() {
         private const val TAG = "ThrottleVpnService"
         private const val MTU = 1500
         private const val TUN_ADDRESS = "10.0.0.2"
+        private const val TUN_ADDRESS_V6 = "fd00:7468:726f:7474::2" // unique local address
         private val FALLBACK_DNS = listOf("8.8.8.8", "1.1.1.1")
 
         const val ACTION_START = "com.rangandale.appthrottler.vpn.action.START"
         const val ACTION_STOP = "com.rangandale.appthrottler.vpn.action.STOP"
+        private const val ACTION_SCENARIO = "com.rangandale.appthrottler.vpn.action.SCENARIO"
+        private const val ACTION_CANCEL_SCENARIO = "com.rangandale.appthrottler.vpn.action.CANCEL_SCENARIO"
+        private const val ACTION_RESET_CONNECTIONS = "com.rangandale.appthrottler.vpn.action.RESET_CONNECTIONS"
+        private const val EXTRA_SCENARIO = "extra_scenario"
         private const val EXTRA_CONFIG = "extra_config"
 
         /** Attributing flows to apps (per-app rules, the connections list) needs Android 10. */
@@ -338,6 +433,28 @@ class ThrottleVpnService : VpnService() {
         // is currently running with, or null while stopped.
         private val _activeConfig = MutableStateFlow<ThrottleConfig?>(null)
         val activeConfig: StateFlow<ThrottleConfig?> = _activeConfig.asStateFlow()
+
+        /** The scenario step in force, or null when the configured values apply. */
+        private val _scenario = MutableStateFlow<ScenarioStatus?>(null)
+        val scenario: StateFlow<ScenarioStatus?> = _scenario.asStateFlow()
+
+        fun scenarioIntent(context: Context, scenario: Scenario): Intent =
+            Intent(context, ThrottleVpnService::class.java).apply {
+                action = ACTION_SCENARIO
+                putExtra(EXTRA_SCENARIO, Gson().toJson(scenario))
+            }
+
+        fun cancelScenarioIntent(context: Context): Intent =
+            Intent(context, ThrottleVpnService::class.java).apply { action = ACTION_CANCEL_SCENARIO }
+
+        fun resetConnectionsIntent(context: Context): Intent =
+            Intent(context, ThrottleVpnService::class.java).apply { action = ACTION_RESET_CONNECTIONS }
+
+        private fun scenarioOf(intent: Intent): Scenario? = try {
+            intent.getStringExtra(EXTRA_SCENARIO)?.let { Gson().fromJson(it, Scenario::class.java) }
+        } catch (e: Exception) {
+            null
+        }
 
         fun startIntent(context: Context, config: ThrottleConfig): Intent =
             Intent(context, ThrottleVpnService::class.java).apply {

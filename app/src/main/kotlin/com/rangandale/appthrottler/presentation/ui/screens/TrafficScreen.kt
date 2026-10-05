@@ -25,6 +25,8 @@ fun TrafficScreen(
     connectionsViewModel: ConnectionsViewModel,
     logsViewModel: LogsViewModel,
     vpnRunning: Boolean,
+    onBlockApp: (packageName: String, label: String) -> Unit,
+    onBlockHost: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
 
@@ -44,7 +46,12 @@ fun TrafficScreen(
         }
         Column(modifier = Modifier.padding(top = 8.dp)) {
             if (tab == 0) {
-                ConnectionsScreen(viewModel = connectionsViewModel, vpnRunning = vpnRunning)
+                ConnectionsScreen(
+                    viewModel = connectionsViewModel,
+                    vpnRunning = vpnRunning,
+                    onBlockApp = onBlockApp,
+                    onBlockHost = onBlockHost,
+                )
             } else {
                 LogsScreen(viewModel = logsViewModel)
             }

@@ -61,8 +61,10 @@ object HostSniffer {
 object DnsMessage {
     private const val HEADER_LEN = 12
     private const val TYPE_A = 1
+    private const val TYPE_AAAA = 28
 
-    class Reply(val name: String, val addresses: List<Int>)
+    /** [addresses] are address handles as used by `IpPacket`. */
+    class Reply(val name: String, val addresses: List<Long>)
 
     /** The name asked for in a query or reply, lower-cased. */
     fun questionName(data: ByteArray, offset: Int, length: Int): String? {
@@ -71,7 +73,7 @@ object DnsMessage {
         return readName(data, offset, offset + length, offset + HEADER_LEN)?.first
     }
 
-    /** The queried name and the IPv4 addresses a reply maps it to. */
+    /** The queried name and the addresses (A and AAAA records) a reply maps it to. */
     fun parseReply(data: ByteArray, offset: Int, length: Int): Reply? {
         val end = offset + length
         if (length < HEADER_LEN + 5) return null
@@ -86,7 +88,7 @@ object DnsMessage {
             i = (readName(data, offset, end, i) ?: return null).second + 4
         }
 
-        val addresses = ArrayList<Int>(answers)
+        val addresses = ArrayList<Long>(answers)
         repeat(answers) {
             i = (readName(data, offset, end, i) ?: return Reply(name, addresses)).second
             if (i + 10 > end) return Reply(name, addresses)
@@ -95,10 +97,9 @@ object DnsMessage {
             i += 10
             if (i + dataLen > end) return Reply(name, addresses)
             if (type == TYPE_A && dataLen == 4) {
-                addresses.add(
-                    ((data[i].toInt() and 0xFF) shl 24) or ((data[i + 1].toInt() and 0xFF) shl 16) or
-                        ((data[i + 2].toInt() and 0xFF) shl 8) or (data[i + 3].toInt() and 0xFF),
-                )
+                addresses.add(java.nio.ByteBuffer.wrap(data, i, 4).int.toLong() and 0xFFFFFFFFL)
+            } else if (type == TYPE_AAAA && dataLen == 16) {
+                addresses.add(com.rangandale.appthrottler.vpn.forward.IpPacket.v6Handle(data, i))
             }
             i += dataLen
         }

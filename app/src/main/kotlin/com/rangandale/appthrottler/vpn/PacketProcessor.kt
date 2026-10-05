@@ -87,7 +87,14 @@ class PacketProcessor(
         runCatching { drainThread?.join(JOIN_TIMEOUT_MS) }
         udpForwarder.stop()
         tcpForwarder.stop()
+        tunWriter.stop()
         ThrottleLogger.d(TAG, "Stopped")
+    }
+
+    /** Resets all open flows while the tunnel stays up. */
+    fun resetConnections() {
+        tcpForwarder.resetAll()
+        udpForwarder.resetAll()
     }
 
     private fun runOutbound() {
@@ -139,7 +146,7 @@ class PacketProcessor(
                 }
                 // Counted once accepted, so the upload figures show what is actually sent on.
                 TrafficCounters.addOut(len)
-                latencyQueue.enqueue(readBuffer.copyOf(len), params.latencyMs, params.jitterMs, shaper.lane, waitMs)
+                latencyQueue.enqueue(readBuffer.copyOf(len), shaper.upLatencyMs, shaper.upJitterMs, shaper.lane, waitMs)
             }
         } catch (e: IOException) {
             if (running.get()) {
@@ -170,35 +177,31 @@ class PacketProcessor(
         }
     }
 
-    /** Only unfragmented IPv4 TCP/UDP can be relayed through plain sockets. */
+    /** Only unfragmented TCP/UDP, without IPv6 extension headers, can be relayed through plain sockets. */
     private fun isForwardable(buffer: ByteArray, length: Int): Boolean {
         if (length < IpPacket.IP_HEADER_LEN) return false
         val protocol = IpPacket.protocolOf(buffer) ?: return false
-        val ihl = (buffer[0].toInt() and 0x0F) * 4
+        val ihl = IpPacket.headerLength(buffer)
         val transportHeader = if (protocol == IpPacket.PROTO_TCP) IpPacket.TCP_HEADER_LEN else IpPacket.UDP_HEADER_LEN
         if (ihl < IpPacket.IP_HEADER_LEN || length < ihl + transportHeader) return false
         return !IpPacket.isFragment(buffer)
     }
 
-    /** The app that sent the (already validated) IPv4 TCP/UDP packet in [packet]. */
+    /** The app that sent the (already validated) TCP/UDP packet in [packet]. */
     private fun ownerOf(packet: ByteArray): Int {
-        val ihl = (packet[0].toInt() and 0x0F) * 4
-        val protocol = packet[9].toInt() and 0xFF
+        val ihl = IpPacket.headerLength(packet)
+        val protocol = IpPacket.protocolOf(packet) ?: return FlowOwners.UNKNOWN_UID
         val key = FlowKey(
             protocol = protocol,
-            srcIp = intAt(packet, 12),
+            srcIp = IpPacket.sourceOf(packet),
             srcPort = shortAt(packet, ihl),
-            dstIp = intAt(packet, 16),
+            dstIp = IpPacket.destinationOf(packet),
             dstPort = shortAt(packet, ihl + 2),
         )
         // A SYN starts a new connection, possibly on a port another app used before.
         val isSyn = protocol == IpPacket.PROTO_TCP && packet[ihl + 13].toInt() and IpPacket.TCP_SYN != 0
         return owners.resolve(key, refresh = isSyn)
     }
-
-    private fun intAt(data: ByteArray, i: Int): Int =
-        ((data[i].toInt() and 0xFF) shl 24) or ((data[i + 1].toInt() and 0xFF) shl 16) or
-            ((data[i + 2].toInt() and 0xFF) shl 8) or (data[i + 3].toInt() and 0xFF)
 
     private fun shortAt(data: ByteArray, i: Int): Int =
         ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
@@ -220,7 +223,7 @@ class PacketProcessor(
             ThrottleLogger.d(
                 TAG,
                 "Dropped $unsupportedPackets unsupported packet(s), latest: ${describe(buffer, length)} " +
-                    "— only IPv4 TCP/UDP is forwarded",
+                    "— only TCP and UDP are forwarded",
             )
         }
     }

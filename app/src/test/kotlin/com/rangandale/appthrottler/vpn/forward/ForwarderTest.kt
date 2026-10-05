@@ -38,8 +38,8 @@ import kotlin.concurrent.thread
  */
 class ForwarderTest {
     private val loopback = InetAddress.getByName("127.0.0.1")
-    private val serverIp = 0x7F000001
-    private val clientIp = 0x0A000002
+    private val serverIp = 0x7F000001L
+    private val clientIp = 0x0A000002L
     private val clientPort = 40_000
 
     private val tunPackets = LinkedBlockingQueue<Segment>()
@@ -86,6 +86,8 @@ class ForwarderTest {
         companion object {
             fun parse(raw: ByteArray): Segment {
                 val bb = ByteBuffer.wrap(raw)
+                // IPv6 packets are inspected through `raw` by the tests that expect them.
+                if (IpPacket.versionOf(raw) == 6) return Segment(raw, 0, 0, 0, 0, 0, 0, ByteArray(0), ByteArray(0))
                 if (raw[9].toInt() == IpPacket.PROTO_UDP) {
                     return Segment(
                         raw, bb.getShort(20).toInt() and 0xFFFF, bb.getShort(22).toInt() and 0xFFFF,
@@ -108,8 +110,12 @@ class ForwarderTest {
         }
     }
 
-    private fun startTcp(downloadKbps: Int = 0, policy: FlowPolicy = FlowPolicy()): TcpForwarder =
-        TcpForwarder({ true }, tun, ShaperSet(ThrottleParams(downloadSpeedKbps = downloadKbps)), policy, owners, mtu = 1500).also {
+    private fun startTcp(
+        downloadKbps: Int = 0,
+        policy: FlowPolicy = FlowPolicy(),
+        shapers: ShaperSet = ShaperSet(ThrottleParams(downloadSpeedKbps = downloadKbps)),
+    ): TcpForwarder =
+        TcpForwarder({ true }, tun, shapers, policy, owners, mtu = 1500).also {
             tcp = it
             it.start()
         }
@@ -353,6 +359,128 @@ class ForwarderTest {
         socket.setSoLinger(true, 0) // close() now sends RST instead of FIN
         socket.close()
         assertTrue(nextPacket().has(TCP_RST))
+    }
+
+    @Test
+    fun `tcp holds server data while offline and delivers it afterwards`() {
+        val shapers = ShaperSet(ThrottleParams())
+        val forwarder = startTcp(shapers = shapers)
+        val server = listen()
+        val (socket, serverSeq) = forwarder.handshake(server, clientIsn = 0)
+
+        shapers.overrideAll(ThrottleParams(packetLossPercent = 100f)) // a scenario step goes offline
+        socket.getOutputStream().write("delayed".toByteArray())
+        assertNull(tunPackets.poll(500, TimeUnit.MILLISECONDS))
+
+        shapers.overrideAll(null)
+        val segment = nextPacket()
+        assertEquals("delayed", String(segment.payload))
+        assertEquals(serverSeq, segment.seq)
+    }
+
+    @Test
+    fun `tcp download loss stalls the stream without corrupting it`() {
+        val forwarder = startTcp(shapers = ShaperSet(ThrottleParams(packetLossPercent = 60f)))
+        val server = listen()
+        val port = server.localPort
+        val (socket, serverSeq) = forwarder.handshake(server, clientIsn = 0)
+
+        val download = ByteArray(6_000) { (it % 251).toByte() }
+        val started = System.nanoTime()
+        thread(isDaemon = true) {
+            // Written in pieces so there are several segments, each with its own chance of "loss".
+            download.asList().chunked(1_000).forEach { chunk ->
+                socket.getOutputStream().write(chunk.toByteArray())
+                socket.getOutputStream().flush()
+                Thread.sleep(20)
+            }
+        }
+        val received = ByteArrayOutputStream()
+        while (received.size() < download.size) {
+            val segment = nextPacket(timeoutMs = 10_000)
+            assertEquals(serverSeq + received.size(), segment.seq)
+            received.write(segment.payload)
+            forwarder.fromClient(port, seq = 1, ack = serverSeq + received.size(), flags = TCP_ACK)
+        }
+        assertArrayEquals(download, received.toByteArray())
+        // With 60 % loss over at least six segments, at least one 200 ms stall is all but certain.
+        assertTrue((System.nanoTime() - started) / 1_000_000 >= 200)
+    }
+
+    @Test
+    fun `resetting connections sends a reset for every open flow`() {
+        val forwarder = startTcp()
+        val server = listen()
+        val (socket, _) = forwarder.handshake(server, clientIsn = 0)
+
+        forwarder.resetAll()
+        assertTrue(nextPacket().has(TCP_RST))
+        assertEquals(FlowState.FAILED, FlowRegistry.snapshot().single().state)
+        assertTrue(runCatching { socket.getInputStream().read() }.getOrDefault(-1) == -1)
+    }
+
+    @Test
+    fun `downstream latency delays delivery to the tun device`() {
+        val shaper = com.rangandale.appthrottler.vpn.throttle.Shaper(ThrottleParams(latencyMs = 400))
+        assertEquals(200, shaper.upLatencyMs)
+        assertEquals(200, shaper.downLatencyMs)
+
+        val packet = IpPacket.buildUdp(serverIp, 53, clientIp, clientPort, ByteArray(4), 4, mtu = 1500).single()
+        tun.deliver(packet, appUid, shaper)
+        assertNull(tunPackets.poll(100, TimeUnit.MILLISECONDS))
+        assertNotNull(tunPackets.poll(1_000, TimeUnit.MILLISECONDS))
+        tun.stop()
+    }
+
+    @Test
+    fun `tcp relays over ipv6`() {
+        val loopback6 = InetAddress.getByName("::1")
+        val server = try {
+            ServerSocket(0, 10, loopback6).also { closeables.add(it) }
+        } catch (e: Exception) {
+            org.junit.Assume.assumeNoException("no IPv6 loopback on this machine", e)
+            return
+        }
+        val forwarder = startTcp()
+        val server6 = IpPacket.v6Handle(loopback6.address, 0)
+        val client6 = IpPacket.v6Handle(InetAddress.getByName("fd00::2").address, 0)
+        fun fromClient(seq: Int, ack: Int, flags: Int, data: ByteArray = ByteArray(0), options: ByteArray = ByteArray(0)) =
+            forwarder.forward(
+                IpPacket.buildTcp(client6, clientPort, server6, server.localPort, seq, ack, flags, 65_535, options, data),
+            )
+
+        /** The TCP part of an IPv6 packet written to the TUN device. */
+        fun next6(): Triple<Int, Int, ByteArray> { // flags, seq, payload
+            val raw = (tunPackets.poll(3, TimeUnit.SECONDS) ?: throw AssertionError("no packet")).raw
+            assertEquals(6, IpPacket.versionOf(raw))
+            assertEquals(raw.size, IpPacket.totalLength(raw))
+            assertEquals(server6, IpPacket.sourceOf(raw))
+            assertEquals(client6, IpPacket.destinationOf(raw))
+            val bb = ByteBuffer.wrap(raw)
+            val headerLen = ((raw[52].toInt() and 0xF0) ushr 4) * 4
+            return Triple(raw[53].toInt() and 0xFF, bb.getInt(44), raw.copyOfRange(40 + headerLen, raw.size))
+        }
+
+        fromClient(seq = 100, ack = 0, flags = TCP_SYN, options = byteArrayOf(2, 4, 0x05, 0xA0.toByte()))
+        val socket = server.accept().also { closeables.add(it); it.soTimeout = 3_000 }
+        val (synAckFlags, serverIsn, _) = next6()
+        assertEquals(TCP_SYN or TCP_ACK, synAckFlags)
+
+        fromClient(seq = 101, ack = serverIsn + 1, flags = TCP_ACK, data = "hello".toByteArray())
+        next6() // ACK
+        assertEquals("hello", String(socket.readExactly(5)))
+
+        val download = ByteArray(3_000) { it.toByte() }
+        socket.getOutputStream().write(download)
+        val received = ByteArrayOutputStream()
+        while (received.size() < download.size) {
+            val (_, seq, payload) = next6()
+            assertEquals(serverIsn + 1 + received.size(), seq)
+            assertTrue("segment exceeds the IPv6 MSS", payload.size <= 1440)
+            received.write(payload)
+        }
+        assertArrayEquals(download, received.toByteArray())
+        assertEquals("0:0:0:0:0:0:0:1", IpPacket.addressOf(FlowRegistry.snapshot().single().remoteIp).hostAddress)
     }
 
     @Test

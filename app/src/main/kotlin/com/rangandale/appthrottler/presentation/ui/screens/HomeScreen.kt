@@ -25,6 +25,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -32,7 +36,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.rangandale.appthrottler.domain.model.AppTraffic
+import com.rangandale.appthrottler.domain.model.PresetProfiles
+import com.rangandale.appthrottler.domain.model.ScenarioStatus
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
+import com.rangandale.appthrottler.presentation.ui.components.RateChart
 import com.rangandale.appthrottler.presentation.ui.components.StatChip
 import com.rangandale.appthrottler.presentation.ui.formatBytes
 import com.rangandale.appthrottler.presentation.ui.formatLatency
@@ -120,6 +127,17 @@ fun HomeScreen(
             )
         }
 
+        if (running) {
+            RateChart(samples = uiState.rateHistory, capacity = HISTORY_CAPACITY, modifier = Modifier.fillMaxWidth())
+            NetworkEventsCard(
+                scenario = uiState.scenario,
+                onOffline = { viewModel.goOffline(OFFLINE_EVENT_SECONDS) },
+                onDegrade = { viewModel.runEvent(PresetProfiles.twoG, DEGRADE_EVENT_SECONDS) },
+                onReset = viewModel::resetConnections,
+                onCancel = viewModel::cancelScenario,
+            )
+        }
+
         ConfigCard(
             title = when {
                 running && uiState.hasUnappliedChanges -> "Active settings"
@@ -182,6 +200,57 @@ private fun ConfigCard(title: String, config: ThrottleConfig) {
         }
     }
 }
+
+/** One-tap disruptions for testing how an app recovers; scenarios live on the Profiles tab. */
+@Composable
+private fun NetworkEventsCard(
+    scenario: ScenarioStatus?,
+    onOffline: () -> Unit,
+    onDegrade: () -> Unit,
+    onReset: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text = "Network events", style = MaterialTheme.typography.titleMedium)
+            if (scenario != null) {
+                var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+                LaunchedEffect(scenario) {
+                    while (true) {
+                        now = System.currentTimeMillis()
+                        kotlinx.coroutines.delay(500)
+                    }
+                }
+                val secondsLeft = ((scenario.stepEndsAtMs - now + 999) / 1000).coerceAtLeast(0)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = "${scenario.stepLabel} — $secondsLeft s left")
+                        Text(
+                            text = if (scenario.stepCount > 1) {
+                                "${scenario.name}, step ${scenario.stepIndex + 1} of ${scenario.stepCount}"
+                            } else {
+                                "Then back to your settings"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    OutlinedButton(onClick = onCancel) { Text("Cancel") }
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onOffline, modifier = Modifier.weight(1f)) { Text("Offline ${OFFLINE_EVENT_SECONDS} s") }
+                    OutlinedButton(onClick = onDegrade, modifier = Modifier.weight(1f)) { Text("2G for ${DEGRADE_EVENT_SECONDS} s") }
+                }
+            }
+            OutlinedButton(onClick = onReset, modifier = Modifier.fillMaxWidth()) { Text("Cut all connections") }
+        }
+    }
+}
+
+private const val HISTORY_CAPACITY = 60
+private const val OFFLINE_EVENT_SECONDS = 10
+private const val DEGRADE_EVENT_SECONDS = 60
 
 @Composable
 private fun AppTrafficCard(apps: List<AppTraffic>, blockedAttempts: Long) {

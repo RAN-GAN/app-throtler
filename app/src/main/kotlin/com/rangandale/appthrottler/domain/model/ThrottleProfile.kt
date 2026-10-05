@@ -57,5 +57,50 @@ object PresetProfiles {
         isPreset = true,
     )
 
-    val all = listOf(twoG, threeG, fourG, slowWifi)
+    val edge = ThrottleProfile(
+        name = "EDGE",
+        downloadSpeedKbps = 240,
+        uploadSpeedKbps = 200,
+        latencyMs = 400,
+        jitterMs = 80,
+        packetLossPercent = 1.5f,
+        selectedAppPackages = emptyList(),
+        isPreset = true,
+    )
+
+    val satellite = ThrottleProfile(
+        name = "Satellite",
+        downloadSpeedKbps = 5_000,
+        uploadSpeedKbps = 1_000,
+        latencyMs = 600,
+        jitterMs = 30,
+        packetLossPercent = 0.5f,
+        selectedAppPackages = emptyList(),
+        isPreset = true,
+    )
+
+    val congestedWifi = ThrottleProfile(
+        name = "Congested Wi-Fi",
+        downloadSpeedKbps = 2_000,
+        uploadSpeedKbps = 1_000,
+        latencyMs = 150,
+        jitterMs = 100,
+        packetLossPercent = 5.0f,
+        selectedAppPackages = emptyList(),
+        isPreset = true,
+    )
+
+    /** No connectivity: every packet is lost, so requests time out rather than fail fast. */
+    val offline = ThrottleProfile(
+        name = "Offline",
+        downloadSpeedKbps = 0,
+        uploadSpeedKbps = 0,
+        latencyMs = 0,
+        jitterMs = 0,
+        packetLossPercent = 100f,
+        selectedAppPackages = emptyList(),
+        isPreset = true,
+    )
+
+    val all = listOf(twoG, edge, threeG, fourG, slowWifi, congestedWifi, satellite, offline)
 }

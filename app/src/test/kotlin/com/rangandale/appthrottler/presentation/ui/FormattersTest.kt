@@ -34,6 +34,22 @@ class FormattersTest {
     }
 
     @Test
+    fun `csv fields are quoted only when needed`() {
+        val csv = com.rangandale.appthrottler.presentation.viewmodel.ConnectionsViewModel::csvField
+        assertEquals("example.com", csv("example.com"))
+        assertEquals("\"Maps, Navigation\"", csv("Maps, Navigation"))
+        assertEquals("\"say \"\"hi\"\"\"", csv("say \"hi\""))
+    }
+
+    @Test
+    fun `scenario steps come from profiles and add up`() {
+        val scenario = com.rangandale.appthrottler.domain.model.BuiltInScenarios.elevator
+        assertEquals(50, scenario.totalSeconds)
+        assertEquals(100f, scenario.steps[1].params.packetLossPercent)
+        assertEquals("Offline", scenario.steps[1].label)
+    }
+
+    @Test
     fun `formatting`() {
         assertEquals("Unlimited", formatSpeedLimit(0))
         assertEquals("40 kbps", formatSpeedLimit(40))

@@ -42,9 +42,10 @@ them. On Android 10 and newer the app asks the system instead — see
 [Knowing which app owns a flow](#knowing-which-app-owns-a-flow). On older versions all selected
 apps share one set of limits and there are no per-app rules.
 
-Only IPv4 is configured on the tunnel (`10.0.0.2/32`, route `0.0.0.0/0`). Android blocks address
-families a VPN does not configure, so the selected apps cannot bypass the throttle over IPv6;
-they fall back to IPv4.
+The tunnel always carries IPv4 (`10.0.0.2/32`, route `0.0.0.0/0`). It carries IPv6 as well
+(a unique local address, route `::/0`) when the active network has a routable IPv6 address at
+start. Android blocks address families a VPN does not configure, so on an IPv4-only network the
+selected apps cannot bypass the throttle over IPv6; they simply use IPv4.
 
 If none of the selected packages is installed, the service refuses to start: a tunnel with no
 allowed application would capture every app on the device.
@@ -68,7 +69,7 @@ TUN read
   → PacketCapture         copy to the capture file, if one is running
   → PacketLossFilter      drop at random
   → upload TokenBucket    reserve bandwidth; yields a wait, or a drop if the queue is full
-  → LatencyQueue          hold for the wait + latency ± jitter
+  → LatencyQueue          hold for the wait + half the latency ± half the jitter
 ```
 
 The `throttler-drain` thread takes packets out of the latency queue when they are due and passes
@@ -85,10 +86,47 @@ Each forwarder has one selector thread watching its real sockets. Data read from
 in freshly built IP packets (`IpPacket`) and written to the TUN device through `TunWriter`, which
 serialises writes and counts bytes.
 
+Packets towards the apps go through `TunWriter.deliver`, which holds them for the other half
+of the latency (in a queue with its own thread) before writing them, so server-initiated data
+arrives late too and a round trip gains the configured latency in total.
+
 - **TCP** is throttled by backpressure. The forwarder reads from a server socket only when the
   owning app's download bucket has tokens, so the real connection slows down by itself.
 - **UDP** has no backpressure, so replies that exceed the download rate are dropped, and the
   packet-loss setting is applied to them as well.
+
+**TCP download loss.** Nothing sent towards the client is ever retransmitted, so a segment
+cannot simply be dropped. Each segment instead has the configured chance of triggering a stall:
+the connection stops reading from the server for `max(200 ms, 2 × latency)`, roughly what a
+retransmission costs. With 100 % loss ("Offline") nothing is read at all until conditions change.
+
+## IPv6 and address handles
+
+Flow keys hold addresses as `Long` handles so they stay cheap to hash: an IPv4 address is its
+32-bit value, an IPv6 address is an id above that range under which `IpPacket` remembers its 16
+bytes. `IpPacket` hides the family behind `headerLength`, `totalLength`, `sourceOf` and
+`destinationOf`, and its builders emit IPv4 or IPv6 according to the handles they are given
+(IPv6 has no header checksum, a different pseudo-header, and fragments through an extension
+header). The forwarders are otherwise family-agnostic; only the TCP MSS differs, because the
+IPv6 header is 20 bytes longer.
+
+## Scenarios and network events
+
+`ShaperSet.overrideAll(params)` puts every app on one set of conditions until it is cleared.
+Shapers are therefore looked up per packet and never cached by a flow, which is what lets
+conditions change under open connections. `ThrottleVpnService` runs a scenario as a chain of
+delayed steps on the main thread, each calling `overrideAll` with the step's values, and
+publishes the current step through `ThrottleVpnService.scenario`. A network event is a one-step
+scenario. "Cut all connections" resets every TCP flow and closes every UDP flow in the forwarders.
+
+## Control surfaces
+
+`VpnController` is the only class that sends intents to the service. The UI's view model, the
+Quick Settings tile (`ThrottleTileService`) and `ControlActivity` all go through it.
+`ControlActivity` is an invisible activity rather than a broadcast receiver because only a
+foreground component may start the VPN's foreground service. It is exported so adb can reach it
+and guarded by the `DUMP` permission, which the shell holds and ordinary apps do not; launcher
+shortcuts reach it as the app itself.
 
 ## Knowing which app owns a flow
 
@@ -230,6 +268,7 @@ fallbacks.
 |---|---|
 | Saved profiles | Room database `throttle.db`, table `throttle_profiles` |
 | Config being edited: values, app list, per-app rules, blocked domains, profile name | SharedPreferences `current_config` |
+| Custom scenarios | SharedPreferences `scenarios` |
 | Last crash report | `files/last_crash.txt`, replayed into the Logs tab on next launch |
 
 ## Statistics

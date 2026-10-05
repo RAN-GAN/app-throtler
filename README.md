@@ -22,6 +22,15 @@ connection or no connection at all, on a real device, and which servers it talks
 - **Connections list.** See every connection the selected apps make: app, host, port, bytes
   and whether it was blocked.
 - **Packet capture.** Save the traffic to a `.pcap` file and open it in Wireshark.
+- **Network events and scenarios.** Go offline for ten seconds, cut every connection, or run a
+  scripted sequence such as "4G, then 2G, then offline, then 3G" while the app under test runs.
+- **Control from outside the app.** A Quick Settings tile, launcher shortcuts, and adb commands
+  for scripts and automated tests.
+- **Rate chart and reports.** A live chart of the last minute, and CSV export of the
+  connections list.
+- **Share a setup.** Export settings, rules, profiles and scenarios to a file and import them
+  on another device.
+- **IPv4 and IPv6.** Both are tunnelled when the network has IPv6.
 - **In-app log.** Tunnel events, connection errors and the previous session's crash report.
 
 Per-app limits, the firewall and the app column of the connections list need Android 10 or
@@ -93,6 +102,9 @@ The **Traffic** tab has two views:
   shown as one entry with a count.
 - **Logs** — tunnel events and errors.
 
+**CSV** saves the connections currently listed (after search and filters) as a spreadsheet-ready
+file. In a connection's details, **Block app** and **Block host** turn it into a rule.
+
 **Capture** on the Connections view asks where to save a `.pcap` file and records every packet
 crossing the tunnel until you press **Stop capture**, the VPN stops, or the file reaches 100 MB.
 With an app filter set, only that app's packets are captured. Encrypted traffic is recorded as
@@ -104,7 +116,7 @@ it is on the wire; nothing is decrypted.
 |---|---|---|
 | Download speed | 10 kbps – 50 Mbps, or Unlimited | Caps data delivered to the selected apps |
 | Upload speed | 10 kbps – 50 Mbps, or Unlimited | Caps data sent by the selected apps |
-| Latency | 0 – 2000 ms | Delay added to every round trip |
+| Latency | 0 – 2000 ms | Delay added to every round trip, half in each direction |
 | Jitter | 0 – 500 ms | Random variation of the latency, per packet |
 | Packet loss | 0 – 30 % | Share of packets dropped at random |
 
@@ -116,9 +128,66 @@ these values unless an app is given its own profile.
 | Preset | Download | Upload | Latency | Jitter | Loss |
 |---|---|---|---|---|---|
 | 2G | 40 kbps | 20 kbps | 300 ms | 50 ms | 2.0 % |
+| EDGE | 240 kbps | 200 kbps | 400 ms | 80 ms | 1.5 % |
 | 3G | 384 kbps | 128 kbps | 100 ms | 20 ms | 1.0 % |
 | 4G | 10.2 Mbps | 5.1 Mbps | 20 ms | 5 ms | 0.1 % |
 | Slow Wi-Fi | 1 Mbps | 512 kbps | 50 ms | 10 ms | 0.5 % |
+| Congested Wi-Fi | 2 Mbps | 1 Mbps | 150 ms | 100 ms | 5.0 % |
+| Satellite | 5 Mbps | 1 Mbps | 600 ms | 30 ms | 0.5 % |
+| Offline | — | — | — | — | 100 % |
+
+Offline drops everything, so requests time out instead of failing at once — what an app sees
+with a connected but dead network.
+
+### Network events and scenarios
+
+While the VPN is running, Home shows a **Network events** card:
+
+| Button | Effect |
+|---|---|
+| **Offline 10 s** | No traffic gets through for ten seconds; connections stay open. |
+| **2G for 60 s** | Every selected app is put on the 2G preset for a minute. |
+| **Cut all connections** | Resets every open connection at once, as when a device changes network. |
+
+A timed event shows a countdown and a **Cancel** button; when it ends, your settings (including
+per-app profiles) apply again.
+
+A **scenario** is a sequence of such steps. The **Profiles** tab lists three built-in ones —
+*Train through a tunnel*, *Elevator ride*, *Flaky Wi-Fi* — and **New scenario** lets you build
+your own from presets and saved profiles, each with a duration. **Run** needs the VPN to be on.
+
+### Tile and shortcuts
+
+- **Quick Settings tile.** Add the *Throttle* tile from the Quick Settings editor. It starts
+  the VPN with the saved settings, or stops it. If VPN permission has not been given yet, or no
+  app is selected, it opens the app instead.
+- **Launcher shortcuts.** Long-press the app icon for *Start throttling* and *Stop throttling*.
+
+### Control from adb
+
+Scripts and automated tests can drive the app through an invisible activity. Each command is
+`adb shell am start -n com.rangandale.appthrottler/.control.ControlActivity` plus:
+
+| Purpose | Arguments |
+|---|---|
+| Start with the saved settings | `-a com.rangandale.appthrottler.action.START` |
+| Start with a preset or saved profile | `-a com.rangandale.appthrottler.action.START --es profile 3G` |
+| Stop | `-a com.rangandale.appthrottler.action.STOP` |
+| Put all apps on a profile for a while | `-a com.rangandale.appthrottler.action.SCENARIO --es profile Offline --ei seconds 10` |
+| Run a scenario by name | `-a com.rangandale.appthrottler.action.SCENARIO --es scenario 'Elevator ride'` |
+| Cancel the running event or scenario | `-a com.rangandale.appthrottler.action.CANCEL_SCENARIO` |
+| Cut all connections | `-a com.rangandale.appthrottler.action.RESET_CONNECTIONS` |
+
+Names are matched without regard to case. A name containing spaces must be quoted for the
+device's shell as well, so wrap the whole command: `adb shell "am start … --es scenario 'Elevator ride'"`.
+Starting this way requires that VPN permission was granted once in the app. Results are written
+to the log (`adb logcat -s AppThrottler`). Other apps on the device cannot use these commands.
+
+### Share a setup
+
+**Settings → Share this setup → Export** writes the settings, per-app rules, blocked domains,
+saved profiles and scenarios to a JSON file. **Import** replaces the current settings and rules
+with the file's, and adds its profiles and scenarios (replacing ones with the same name).
 
 ### Profiles
 
@@ -131,12 +200,13 @@ Presets carry no app list, so loading one keeps the apps you have selected.
 
 ## Limitations
 
-- **IPv4 TCP and UDP only.** IPv6 is not tunnelled, so the selected apps fall back to IPv4.
-  ICMP is dropped, so ping does not work inside a throttled app.
-- **Latency is applied to upstream packets.** The value is the delay added per round trip, not
-  per direction.
-- **Packet loss does not apply to TCP downloads.** It applies to everything the apps send, and
-  to UDP replies. The app terminates TCP locally, so there is no downstream TCP packet to drop.
+- **TCP and UDP only.** ICMP is dropped, so ping does not work inside a throttled app. IPv6
+  packets with extension headers are dropped too.
+- **IPv6 follows the network at start.** IPv6 is tunnelled if the network has it when the VPN
+  starts; if the device then moves to a network without IPv6, restart the VPN.
+- **TCP download loss is simulated, not literal.** The app terminates TCP locally, so instead of
+  dropping a downloaded segment it stalls the connection for about as long as a retransmission
+  would take. Uploads and UDP in both directions are really dropped.
 - **One VPN at a time.** Android allows a single active VPN, so App Throttler cannot run
   alongside another VPN app, and it cannot be used as an always-on VPN.
 - **Android 10+ for per-app features.** On Android 5–9 there is one profile per session and

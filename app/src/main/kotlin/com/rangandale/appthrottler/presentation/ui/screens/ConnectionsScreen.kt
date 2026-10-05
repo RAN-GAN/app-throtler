@@ -52,7 +52,12 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun ConnectionsScreen(viewModel: ConnectionsViewModel, vpnRunning: Boolean) {
+fun ConnectionsScreen(
+    viewModel: ConnectionsViewModel,
+    vpnRunning: Boolean,
+    onBlockApp: (packageName: String, label: String) -> Unit,
+    onBlockHost: (String) -> Unit,
+) {
     val uiState by viewModel.uiState.collectAsState()
     val capture by viewModel.captureState.collectAsState()
     var details by remember { mutableStateOf<ConnectionUi?>(null) }
@@ -77,6 +82,8 @@ fun ConnectionsScreen(viewModel: ConnectionsViewModel, vpnRunning: Boolean) {
             filteredApp = uiState.apps.firstOrNull { it.uid == uiState.appFilter }?.label,
             onStart = viewModel::startCapture,
             onStop = viewModel::stopCapture,
+            canExport = uiState.connections.isNotEmpty(),
+            onExportCsv = viewModel::exportCsv,
         )
 
         OutlinedTextField(
@@ -136,7 +143,12 @@ fun ConnectionsScreen(viewModel: ConnectionsViewModel, vpnRunning: Boolean) {
     }
 
     details?.let { connection ->
-        ConnectionDetails(connection, onDismiss = { details = null })
+        ConnectionDetails(
+            connection = connection,
+            onDismiss = { details = null },
+            onBlockApp = { connection.packageName?.let { onBlockApp(it, connection.appLabel) }; details = null },
+            onBlockHost = { onBlockHost(connection.destination); details = null },
+        )
     }
 }
 
@@ -147,10 +159,15 @@ private fun CaptureBar(
     filteredApp: String?,
     onStart: (android.net.Uri) -> Unit,
     onStop: () -> Unit,
+    canExport: Boolean,
+    onExportCsv: (android.net.Uri) -> Unit,
 ) {
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/vnd.tcpdump.pcap"),
     ) { uri -> if (uri != null) onStart(uri) }
+    val csvPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri -> if (uri != null) onExportCsv(uri) }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -177,6 +194,10 @@ private fun CaptureBar(
                 enabled = vpnRunning,
             ) { Text("Capture") }
         }
+        OutlinedButton(
+            onClick = { csvPicker.launch("connections-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.csv") },
+            enabled = canExport,
+        ) { Text("CSV") }
     }
 }
 
@@ -230,7 +251,14 @@ private fun stateLabel(connection: ConnectionUi): String = when (connection.stat
 }
 
 @Composable
-private fun ConnectionDetails(connection: ConnectionUi, onDismiss: () -> Unit) {
+private fun ConnectionDetails(
+    connection: ConnectionUi,
+    onDismiss: () -> Unit,
+    onBlockApp: () -> Unit,
+    onBlockHost: () -> Unit,
+) {
+    // An address is not a domain rule; only connections with a known host name can be blocked by host.
+    val hasHostName = connection.destination != connection.address
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(connection.destination, maxLines = 2, overflow = TextOverflow.Ellipsis) },
@@ -248,6 +276,12 @@ private fun ConnectionDetails(connection: ConnectionUi, onDismiss: () -> Unit) {
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        dismissButton = {
+            Row {
+                if (connection.packageName != null) TextButton(onClick = onBlockApp) { Text("Block app") }
+                if (hasHostName) TextButton(onClick = onBlockHost) { Text("Block host") }
+            }
+        },
     )
 }
 

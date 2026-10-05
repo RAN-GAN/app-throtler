@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicLong
 enum class FlowState { OPEN, CLOSED, FAILED, BLOCKED }
 
 /** Identifies a transport flow as seen on the TUN device. */
-data class FlowKey(val protocol: Int, val srcIp: Int, val srcPort: Int, val dstIp: Int, val dstPort: Int)
+data class FlowKey(val protocol: Int, val srcIp: Long, val srcPort: Int, val dstIp: Long, val dstPort: Int)
 
 /** Immutable view of a flow for the UI. */
 data class FlowSnapshot(
@@ -15,7 +15,7 @@ data class FlowSnapshot(
     val protocol: Int,
     val uid: Int,
     val localPort: Int,
-    val remoteIp: Int,
+    val remoteIp: Long,
     val remotePort: Int,
     val hostname: String?,
     val state: FlowState,
@@ -35,7 +35,7 @@ class FlowRecord internal constructor(
     val protocol: Int,
     val uid: Int,
     val localPort: Int,
-    val remoteIp: Int,
+    val remoteIp: Long,
     val remotePort: Int,
     private val appCounters: AppCounters,
 ) {
@@ -79,7 +79,7 @@ internal class AppCounters {
 object FlowRegistry {
     private const val MAX_FINISHED = 500
 
-    private data class BlockedKey(val protocol: Int, val uid: Int, val remoteIp: Int, val remotePort: Int, val hostname: String?)
+    private data class BlockedKey(val protocol: Int, val uid: Int, val remoteIp: Long, val remotePort: Int, val hostname: String?)
 
     private val nextId = AtomicLong()
     private val open = ConcurrentHashMap<Long, FlowRecord>()
@@ -92,12 +92,12 @@ object FlowRegistry {
 
     val totalBlockedAttempts: Long get() = blockedAttempts.get()
 
-    private fun newRecord(protocol: Int, uid: Int, localPort: Int, remoteIp: Int, remotePort: Int) = FlowRecord(
+    private fun newRecord(protocol: Int, uid: Int, localPort: Int, remoteIp: Long, remotePort: Int) = FlowRecord(
         nextId.incrementAndGet(), protocol, uid, localPort, remoteIp, remotePort,
         apps.getOrPut(uid) { AppCounters() },
     )
 
-    fun open(protocol: Int, uid: Int, localPort: Int, remoteIp: Int, remotePort: Int): FlowRecord {
+    fun open(protocol: Int, uid: Int, localPort: Int, remoteIp: Long, remotePort: Int): FlowRecord {
         val record = newRecord(protocol, uid, localPort, remoteIp, remotePort)
         record.hostname = HostnameCache.get(remoteIp)
         open[record.id] = record
@@ -113,7 +113,7 @@ object FlowRegistry {
     }
 
     /** Records a refused flow. Repeated attempts at the same destination share one entry. */
-    fun blocked(protocol: Int, uid: Int, localPort: Int, remoteIp: Int, remotePort: Int, hostname: String?) {
+    fun blocked(protocol: Int, uid: Int, localPort: Int, remoteIp: Long, remotePort: Int, hostname: String?) {
         blockedAttempts.incrementAndGet()
         val now = System.currentTimeMillis()
         val key = BlockedKey(protocol, uid, remoteIp, remotePort, hostname)
@@ -171,11 +171,11 @@ object FlowRegistry {
 /** Names learned from DNS replies, used to label flows by the host the app asked for. */
 object HostnameCache {
     private const val MAX_ENTRIES = 4096
-    private val names = ConcurrentHashMap<Int, String>()
+    private val names = ConcurrentHashMap<Long, String>()
 
-    fun get(ip: Int): String? = names[ip]
+    fun get(ip: Long): String? = names[ip]
 
-    fun put(ip: Int, name: String) {
+    fun put(ip: Long, name: String) {
         if (names.size >= MAX_ENTRIES) names.clear()
         names[ip] = name
     }

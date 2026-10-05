@@ -42,7 +42,32 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- Shortcut and adb entry point. Exported so adb can reach it, but guarded by a
+             permission that the shell holds and ordinary apps do not. -->
+        <activity
+            android:name=".control.ControlActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:permission="android.permission.DUMP"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
+
+        <service
+            android:name=".control.ThrottleTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_throttle"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

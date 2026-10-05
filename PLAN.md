@@ -628,3 +628,18 @@ Each step is shippable on its own and is verified on a physical device before th
 - **A per-app profile is a copy.** Picking a profile for an app copies its values into the
   rule; it does not stay linked to the saved profile.
 - **Unknown owners are always allowed**; there is no setting for it.
+
+---
+
+## Later additions
+
+Built after the roadmap above; described in the README and `docs/ARCHITECTURE.md`.
+
+- Latency split across both directions, and simulated packet loss for TCP downloads.
+- Network events (offline, degrade, cut connections) and scripted scenarios.
+- Quick Settings tile, launcher shortcuts, and control through adb.
+- IPv6 tunnelling alongside IPv4.
+- Rules created from the connections list, a live rate chart, CSV export of connections.
+- Export and import of a whole setup, and four more presets.
+
+Not built, by choice: TLS decryption and a device-wide firewall.

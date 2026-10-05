@@ -8,8 +8,8 @@ import org.junit.Test
 import java.nio.ByteBuffer
 
 class IpPacketTest {
-    private val src = 0x08080808 // 8.8.8.8
-    private val dst = 0x0A000002 // 10.0.0.2
+    private val src = 0x08080808L // 8.8.8.8
+    private val dst = 0x0A000002L // 10.0.0.2
 
     /** Checksum over [length] bytes plus the TCP/UDP pseudo header; 0 means the packet is valid. */
     private fun transportChecksum(packet: ByteArray, protocol: Int): Int {
@@ -38,8 +38,10 @@ class IpPacketTest {
         assertEquals(packet.size, bb.getShort(2).toInt() and 0xFFFF)
         assertEquals(IpPacket.PROTO_TCP, IpPacket.protocolOf(packet))
         assertFalse(IpPacket.isFragment(packet))
-        assertEquals(src, bb.getInt(12))
-        assertEquals(dst, bb.getInt(16))
+        assertEquals(src.toInt(), bb.getInt(12))
+        assertEquals(dst.toInt(), bb.getInt(16))
+        assertEquals(src, IpPacket.sourceOf(packet))
+        assertEquals(dst, IpPacket.destinationOf(packet))
         assertEquals(443, bb.getShort(20).toInt() and 0xFFFF)
         assertEquals(50_000, bb.getShort(22).toInt() and 0xFFFF)
         assertEquals(-2, bb.getInt(24))
@@ -114,9 +116,84 @@ class IpPacketTest {
         assertEquals(0, transportChecksum(whole, IpPacket.PROTO_UDP))
     }
 
+    private val src6 = IpPacket.v6Handle(java.net.InetAddress.getByName("2001:db8::1").address, 0)
+    private val dst6 = IpPacket.v6Handle(java.net.InetAddress.getByName("fd00::2").address, 0)
+
+    /** Checksum of the transport part of an IPv6 packet including its pseudo header; 0 means valid. */
+    private fun transportChecksum6(packet: ByteArray, protocol: Int, transportOffset: Int = 40): Int {
+        val length = packet.size - transportOffset
+        val pseudo = ByteBuffer.allocate(40 + length)
+            .put(packet, 8, 32)
+            .putInt(length)
+            .put(byteArrayOf(0, 0, 0, protocol.toByte()))
+            .put(packet, transportOffset, length)
+            .array()
+        return IpPacket.checksum(pseudo, 0, pseudo.size)
+    }
+
     @Test
-    fun `non ipv4 and unsupported protocols are rejected`() {
-        val ipv6 = ByteArray(40).also { it[0] = 0x60 }
+    fun `ipv6 addresses get stable handles above the ipv4 range`() {
+        val bytes = java.net.InetAddress.getByName("2001:db8::1").address
+        assertEquals(src6, IpPacket.v6Handle(bytes, 0))
+        assertTrue(IpPacket.isV6(src6))
+        assertFalse(IpPacket.isV6(0xFFFFFFFFL))
+        assertTrue(src6 != dst6)
+        assertArrayEquals(bytes, IpPacket.addressBytes(src6))
+        assertEquals("255.255.255.255", IpPacket.addressOf(0xFFFFFFFFL).hostAddress)
+    }
+
+    @Test
+    fun `ipv6 tcp packet has a valid header and checksum`() {
+        val data = ByteArray(77) { it.toByte() }
+        val packet = IpPacket.buildTcp(
+            srcIp = src6, srcPort = 443, dstIp = dst6, dstPort = 50_000,
+            seq = 9, ack = 7, flags = IpPacket.TCP_ACK, window = 1_000, data = data,
+        )
+        assertEquals(40 + 20 + 77, packet.size)
+        assertEquals(6, IpPacket.versionOf(packet))
+        assertEquals(40, IpPacket.headerLength(packet))
+        assertEquals(packet.size, IpPacket.totalLength(packet))
+        assertEquals(IpPacket.PROTO_TCP, IpPacket.protocolOf(packet))
+        assertFalse(IpPacket.isFragment(packet))
+        assertEquals(src6, IpPacket.sourceOf(packet))
+        assertEquals(dst6, IpPacket.destinationOf(packet))
+        assertEquals(443, ByteBuffer.wrap(packet).getShort(40).toInt() and 0xFFFF)
+        assertEquals(0, transportChecksum6(packet, IpPacket.PROTO_TCP))
+    }
+
+    @Test
+    fun `ipv6 udp datagram is built whole or as fragments with an extension header`() {
+        val small = IpPacket.buildUdp(src6, 53, dst6, 40_000, ByteArray(100) { 7 }, 100, mtu = 1500).single()
+        assertEquals(40 + 8 + 100, small.size)
+        assertEquals(IpPacket.PROTO_UDP, IpPacket.protocolOf(small))
+        assertEquals(0, transportChecksum6(small, IpPacket.PROTO_UDP))
+
+        val data = ByteArray(4000) { it.toByte() }
+        val fragments = IpPacket.buildUdp(src6, 53, dst6, 40_000, data, data.size, mtu = 1500)
+        assertEquals(3, fragments.size)
+        val reassembled = ByteArray(8 + data.size)
+        fragments.forEachIndexed { index, fragment ->
+            assertTrue(fragment.size <= 1500)
+            assertEquals(fragment.size, IpPacket.totalLength(fragment))
+            assertEquals(44, fragment[6].toInt()) // next header: fragment
+            assertEquals(null, IpPacket.protocolOf(fragment)) // never mistaken for a plain UDP packet
+            val bb = ByteBuffer.wrap(fragment)
+            assertEquals(IpPacket.PROTO_UDP, fragment[40].toInt())
+            val offsetAndFlags = bb.getShort(42).toInt() and 0xFFFF
+            assertEquals(index < fragments.lastIndex, offsetAndFlags and 1 == 1)
+            assertEquals(ByteBuffer.wrap(fragments[0]).getInt(44), bb.getInt(44)) // same identification
+            System.arraycopy(fragment, 48, reassembled, offsetAndFlags and 0xFFF8, fragment.size - 48)
+        }
+        assertArrayEquals(data, reassembled.copyOfRange(8, reassembled.size))
+        val whole = ByteArray(40 + reassembled.size)
+        System.arraycopy(fragments[0], 0, whole, 0, 40)
+        System.arraycopy(reassembled, 0, whole, 40, reassembled.size)
+        assertEquals(0, transportChecksum6(whole, IpPacket.PROTO_UDP))
+    }
+
+    @Test
+    fun `unsupported protocols are rejected`() {
+        val ipv6 = ByteArray(40).also { it[0] = 0x60; it[6] = 58 } // ICMPv6
         val icmp = ByteArray(28).also { it[0] = 0x45; it[9] = 1 }
         assertEquals(null, IpPacket.protocolOf(ipv6))
         assertEquals(null, IpPacket.protocolOf(icmp))

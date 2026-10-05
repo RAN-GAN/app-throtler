@@ -10,7 +10,6 @@ import com.rangandale.appthrottler.vpn.flow.FlowRecord
 import com.rangandale.appthrottler.vpn.flow.FlowRegistry
 import com.rangandale.appthrottler.vpn.flow.FlowState
 import com.rangandale.appthrottler.vpn.flow.HostnameCache
-import com.rangandale.appthrottler.vpn.throttle.Shaper
 import com.rangandale.appthrottler.vpn.throttle.ShaperSet
 import com.rangandale.appthrottler.vpn.throttle.PacketLossFilter
 import java.io.IOException
@@ -49,12 +48,11 @@ class UdpForwarder(
         val channel: DatagramChannel,
         val uid: Int,
         val record: FlowRecord,
-        val shaper: Shaper,
     ) {
         @Volatile var lastActivityMs: Long = System.currentTimeMillis()
     }
 
-    data class UdpKey(val srcIp: Int, val srcPort: Int, val dstIp: Int, val dstPort: Int)
+    data class UdpKey(val srcIp: Long, val srcPort: Int, val dstIp: Long, val dstPort: Int)
 
     private val running = AtomicBoolean(false)
     private val selector = Selector.open()
@@ -86,20 +84,25 @@ class UdpForwarder(
         runCatching { selector.close() }
     }
 
-    /** Forwards one outbound IPv4/UDP packet read from the TUN device. */
+    /** Drops every flow, as when the device loses its network. */
+    fun resetAll() {
+        sessions.values.forEach { closeSession(it, FlowState.FAILED) }
+    }
+
+    /** Forwards one outbound UDP packet (over IPv4 or IPv6) read from the TUN device. */
     fun forward(packet: ByteArray) {
-        val ihl = (packet[0].toInt() and 0x0F) * 4
+        val ihl = IpPacket.headerLength(packet)
         if (ihl < IpPacket.IP_HEADER_LEN || packet.size < ihl + IpPacket.UDP_HEADER_LEN) return
         val bb = ByteBuffer.wrap(packet)
-        val totalLen = minOf(bb.getShort(2).toInt() and 0xFFFF, packet.size)
+        val totalLen = minOf(IpPacket.totalLength(packet), packet.size)
         val dataStart = ihl + IpPacket.UDP_HEADER_LEN
         val dataLen = totalLen - dataStart
         if (dataLen <= 0) return
 
         val key = UdpKey(
-            srcIp = bb.getInt(12),
+            srcIp = IpPacket.sourceOf(packet),
             srcPort = bb.getShort(ihl).toInt() and 0xFFFF,
-            dstIp = bb.getInt(16),
+            dstIp = IpPacket.destinationOf(packet),
             dstPort = bb.getShort(ihl + 2).toInt() and 0xFFFF,
         )
         var session = sessions[key]
@@ -145,7 +148,7 @@ class UdpForwarder(
             if (!protect(channel.socket())) throw IOException("protect() failed")
             channel.connect(InetSocketAddress(IpPacket.addressOf(key.dstIp), key.dstPort))
             val record = FlowRegistry.open(IpPacket.PROTO_UDP, uid, key.srcPort, key.dstIp, key.dstPort)
-            val session = Session(key, channel, uid, record, shapers.forUid(uid))
+            val session = Session(key, channel, uid, record)
             sessions[key] = session
             pendingRegistrations.add(session)
             selector.wakeup()
@@ -225,8 +228,9 @@ class UdpForwarder(
             session.lastActivityMs = System.currentTimeMillis()
             val key = session.key
             if (key.dstPort == DNS_PORT) learnHostnames(buf.array(), read)
-            if (PacketLossFilter.shouldDrop(session.shaper.params.packetLossPercent)) continue
-            if (!session.shaper.download.tryConsume(read)) continue
+            val shaper = shapers.forUid(session.uid)
+            if (PacketLossFilter.shouldDrop(shaper.params.packetLossPercent)) continue
+            if (!shaper.download.tryConsume(read)) continue
 
             val packets = IpPacket.buildUdp(
                 srcIp = key.dstIp,
@@ -238,7 +242,7 @@ class UdpForwarder(
                 mtu = mtu,
             )
             for (packet in packets) {
-                tun.write(packet, session.uid)
+                tun.deliver(packet, session.uid, shaper)
                 session.record.addDown(packet.size)
             }
         }
