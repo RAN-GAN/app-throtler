@@ -10,9 +10,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -24,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.rangandale.appthrottler.domain.model.PresetProfiles
@@ -108,6 +114,13 @@ fun SettingsScreen(
             valueRange = 0f..MAX_PACKET_LOSS_PERCENT,
         )
 
+        HorizontalDivider()
+        BlockedDomains(
+            domains = config.blockedDomains,
+            onAdd = viewModel::addBlockedDomain,
+            onRemove = viewModel::removeBlockedDomain,
+        )
+
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(onClick = { showSaveDialog = true }, modifier = Modifier.weight(1f)) {
                 Text("Save as profile")
@@ -138,6 +151,39 @@ fun SettingsScreen(
                 viewModel.saveCurrentProfile(name)
             },
         )
+    }
+}
+
+@Composable
+private fun BlockedDomains(domains: List<String>, onAdd: (String) -> Boolean, onRemove: (String) -> Unit) {
+    var input by rememberSaveable { mutableStateOf("") }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(text = "Blocked domains", style = MaterialTheme.typography.titleSmall)
+        Text(
+            text = "Selected apps cannot reach these domains or their subdomains. " +
+                "Apps that use encrypted DNS and hide the host name can get around this.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("example.com") },
+                singleLine = true,
+            )
+            Button(onClick = { if (onAdd(input)) input = "" }, enabled = input.isNotBlank()) { Text("Add") }
+        }
+        domains.forEach { domain ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = domain, modifier = Modifier.weight(1f))
+                IconButton(onClick = { onRemove(domain) }) {
+                    Icon(Icons.Default.Close, contentDescription = "Remove $domain")
+                }
+            }
+        }
     }
 }
 

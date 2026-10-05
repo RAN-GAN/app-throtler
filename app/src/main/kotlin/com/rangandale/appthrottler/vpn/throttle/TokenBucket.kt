@@ -52,19 +52,25 @@ class TokenBucket(
         tokens = (tokens + bytes).coerceAtMost(capacityBytes)
     }
 
-    /** Blocks the calling thread until [bytes] tokens were taken. Interruptible. */
-    @Throws(InterruptedException::class)
-    fun consumeBlocking(bytes: Int) {
-        while (!tryConsume(bytes)) {
-            Thread.sleep(waitMillisFor(bytes))
-        }
-    }
-
+    /**
+     * Books [bytes] against the bucket even if it is empty, and returns how many milliseconds
+     * the caller must hold the packet back for the rate to be respected. Returns -1 without
+     * booking anything if that wait would exceed [maxWaitMs] — the queue is full and the packet
+     * should be dropped, as a real link would.
+     */
     @Synchronized
-    private fun waitMillisFor(bytes: Int): Long {
-        val deficit = minOf(bytes.toLong(), capacityBytes) - tokens
-        if (deficit <= 0) return 1L
-        return (deficit * 1000L / bytesPerSecond).coerceIn(1L, MAX_WAIT_MS)
+    fun reserve(bytes: Int, maxWaitMs: Long): Long {
+        if (unlimited) return 0L
+        refill()
+        val after = tokens - bytes
+        if (after >= 0) {
+            tokens = after
+            return 0L
+        }
+        val waitMs = -after * 1000L / bytesPerSecond
+        if (waitMs > maxWaitMs) return -1L
+        tokens = after
+        return waitMs
     }
 
     private fun refill() {
@@ -87,7 +93,6 @@ class TokenBucket(
     companion object {
         private const val BURST_MS = 250L
         private const val MIN_CAPACITY_BYTES = 4096L
-        private const val MAX_WAIT_MS = 50L
         private const val NS_PER_SECOND = 1_000_000_000L
         private const val MAX_ELAPSED_NS = 10 * NS_PER_SECOND
     }

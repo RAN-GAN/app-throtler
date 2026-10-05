@@ -18,11 +18,16 @@ for dependency injection, Room for saved profiles, and a `VpnService` that does 
 │ (foreground)       │              │ Profile (Room)            │
 └───────┬────────────┘              │ CurrentConfig (prefs)     │
         │                           │ App (PackageManager)      │
-┌───────▼────────────┐              │ Stats (TrafficCounters)   │
-│ PacketProcessor    │              └───────────────────────────┘
-│  ├ TcpForwarder    │
-│  └ UdpForwarder    │
-└────────────────────┘
+┌───────▼────────────┐              │ Stats (TrafficCounters,   │
+│ PacketProcessor    │              │        FlowRegistry)      │
+│  ├ TcpForwarder    │              │ AppIdentity (UID → app)   │
+│  └ UdpForwarder    │              └───────────────────────────┘
+└───────┬────────────┘
+        │ uses
+┌───────▼────────────────────────────────────────────┐
+│ FlowOwners · FlowPolicy · ShaperSet · FlowRegistry │
+│ PacketCapture                                      │
+└────────────────────────────────────────────────────┘
 ```
 
 ## How per-app throttling works
@@ -33,7 +38,9 @@ so the kernel routes only those apps' packets into the TUN interface. Every othe
 the normal network and never touches this app's code.
 
 What arrives on the TUN descriptor is raw IPv4 packets with no indication of which app sent
-them. That is why one session has one set of limits for all selected apps.
+them. On Android 10 and newer the app asks the system instead — see
+[Knowing which app owns a flow](#knowing-which-app-owns-a-flow). On older versions all selected
+apps share one set of limits and there are no per-app rules.
 
 Only IPv4 is configured on the tunnel (`10.0.0.2/32`, route `0.0.0.0/0`). Android blocks address
 families a VPN does not configure, so the selected apps cannot bypass the throttle over IPv6;
@@ -57,16 +64,20 @@ back in.
 ```
 TUN read
   → drop if not unfragmented IPv4 TCP/UDP
+  → FlowOwners            which app sent it → that app's Shaper
+  → PacketCapture         copy to the capture file, if one is running
   → PacketLossFilter      drop at random
-  → upload TokenBucket    block until the packet fits the rate
-  → LatencyQueue          hold for latency ± jitter
+  → upload TokenBucket    reserve bandwidth; yields a wait, or a drop if the queue is full
+  → LatencyQueue          hold for the wait + latency ± jitter
 ```
 
 The `throttler-drain` thread takes packets out of the latency queue when they are due and passes
 them to `TcpForwarder` or `UdpForwarder`.
 
-Blocking the reader while the upload bucket is empty is deliberate: the TUN queue fills up and
-the sending apps' own TCP stacks slow down, as they would on a slow link.
+Rate limiting is expressed as a delay rather than by blocking the reader: `TokenBucket.reserve`
+books the packet and says how long it must wait. That keeps one app's slow profile from holding
+up another app's packets. A packet that would wait more than five seconds is dropped instead,
+which is how a full queue on a real link behaves, and the sender's TCP stack slows down.
 
 ### Downstream: internet → app
 
@@ -75,9 +86,71 @@ in freshly built IP packets (`IpPacket`) and written to the TUN device through `
 serialises writes and counts bytes.
 
 - **TCP** is throttled by backpressure. The forwarder reads from a server socket only when the
-  download bucket has tokens, so the real connection slows down by itself.
+  owning app's download bucket has tokens, so the real connection slows down by itself.
 - **UDP** has no backpressure, so replies that exceed the download rate are dropped, and the
   packet-loss setting is applied to them as well.
+
+## Knowing which app owns a flow
+
+`ConnectivityManager.getConnectionOwnerUid()` (Android 10+) tells a VPN app the UID behind a TCP
+or UDP flow. `FlowOwners` wraps it with a cache: the lookup is a call into the system, so it is
+made once per flow — refreshed on a TCP SYN and forgotten when a UDP flow expires, because a
+port can be reused by another app. A failed lookup yields "unknown app", which is never blocked
+and uses the session settings.
+
+Three things hang off the UID:
+
+| Class | Decides |
+|---|---|
+| `ShaperSet` | Which `Shaper` (upload bucket, download bucket, latency lane, loss) applies: the app's own if it has a per-app profile, otherwise the shared session one. |
+| `FlowPolicy` | Whether the flow is refused: the app's block rule, evaluated against the current network type and screen state, plus the blocked-domain list. |
+| `FlowRegistry` | Where the flow is recorded for the connections list and per-app totals. |
+
+Name lookups are made by Android's resolver on an app's behalf, so DNS flows carry a system
+UID, not the app's. Blocking an app therefore refuses its connections but not its lookups.
+
+## Firewall
+
+`ThrottleVpnService` turns the config's `AppRule`s into a UID-keyed `FlowPolicy` when the tunnel
+starts, and keeps it informed of the default network's transport (a network callback) and the
+screen state (a broadcast receiver). The packet threads only read it.
+
+- **Blocked app, TCP** — the SYN is answered with a reset and no real connection is opened.
+  Existing connections are checked once a second, so a rule that starts to apply (screen turns
+  off, Wi-Fi drops to mobile) also cuts connections that are already open.
+- **Blocked app, UDP** — datagrams are dropped.
+- **Blocked domain, DNS** — a query to port 53 for a listed name or a subdomain is answered
+  locally with NXDOMAIN and never forwarded.
+- **Blocked domain, TCP** — the first client bytes are inspected for a TLS server name or HTTP
+  Host header; a match resets the connection before anything reaches the server.
+- **Encrypted DNS** — while any domain is blocked, connections to port 853 are refused so the
+  resolver falls back to plain DNS that the rules can see.
+
+Every refusal is recorded in the `FlowRegistry`; repeated attempts at one destination share an
+entry with a counter.
+
+## Flow registry and host names
+
+`FlowRegistry` is a process-wide record of the current session's flows: owner, destination,
+bytes each way, start and end, and outcome (`OPEN`, `CLOSED`, `FAILED`, `BLOCKED`). Open flows
+live in a map; finished ones in a ring of the latest 500. It resets when a tunnel is built.
+
+Host names are learned passively, never by resolving anything:
+
+- `UdpForwarder` parses DNS replies (`DnsMessage`) and stores address → queried name in
+  `HostnameCache`; a new flow to that address is labelled with the name.
+- `TcpForwarder` reads the TLS SNI or HTTP Host from the first client segment (`HostSniffer`),
+  which overrides the DNS-derived label.
+
+## Packet capture
+
+`PacketCapture` writes classic pcap with link type `LINKTYPE_RAW` (101), so every record is one
+IP packet exactly as it crossed the tunnel. Packets are offered at two points — after the TUN
+read in `PacketProcessor`, and in `TunWriter` — together with the owning UID for the optional
+per-app filter. Offering never blocks: packets are copied into a bounded queue and written by a
+dedicated thread. If the queue is full the packet is left out of the file and counted, so a
+slow disk costs capture completeness, never forwarding speed. The capture ends on request, when
+the VPN stops, or at the size cap.
 
 ## TCP forwarder
 
@@ -131,13 +204,14 @@ than the tunnel MTU are split into IP fragments, because the TUN device rejects 
 | Class | Role |
 |---|---|
 | `TokenBucket` | Byte-based rate limiter. Holds 250 ms of traffic (at least 4096 bytes). A rate of 0 means unlimited. |
-| `LatencyQueue` | Delays packets by latency ± jitter. Release times never go backwards, so jitter varies the delay without reordering packets. |
+| `LatencyQueue` | Delays packets by latency ± jitter plus any rate-limit wait. Within a lane (one `Shaper`), release times never go backwards, so jitter varies the delay without reordering packets. |
 | `PacketLossFilter` | Drops a packet with the configured probability. |
+| `Shaper`, `ShaperSet` | One `Shaper` bundles both buckets and a latency lane for a set of values; the set maps UIDs with their own profile to their own `Shaper`. |
 
 ## Service lifecycle and state
 
-The ViewModel starts the service with an `ACTION_START` intent carrying the `ThrottleConfig`, and
-stops it with `ACTION_STOP`. Starting while a tunnel is up replaces it, which is how
+The ViewModel starts the service with an `ACTION_START` intent carrying the `ThrottleConfig` as
+JSON (app list, session values, per-app rules, blocked domains), and stops it with `ACTION_STOP`. Starting while a tunnel is up replaces it, which is how
 **Apply** works.
 
 `ThrottleVpnService.activeConfig` is the source of truth for VPN state: it holds the config the
@@ -155,12 +229,12 @@ fallbacks.
 | Data | Where |
 |---|---|
 | Saved profiles | Room database `throttle.db`, table `throttle_profiles` |
-| Config being edited, and its profile name | SharedPreferences `current_config` |
+| Config being edited: values, app list, per-app rules, blocked domains, profile name | SharedPreferences `current_config` |
 | Last crash report | `files/last_crash.txt`, replayed into the Logs tab on next launch |
 
 ## Statistics
 
 `TrafficCounters` holds two process-wide byte counters written by the packet threads: bytes
 accepted from the apps and bytes delivered to them. `StatsRepository` samples them once per
-second while the VPN is running and emits totals and rates. The counters reset when a tunnel is
-(re)built.
+second while the VPN is running and emits totals and rates, together with per-app totals and the
+number of blocked attempts from the `FlowRegistry`. Everything resets when a tunnel is (re)built.

@@ -9,10 +9,13 @@ import androidx.lifecycle.viewModelScope
 import com.rangandale.appthrottler.data.repository.CurrentConfigRepository
 import com.rangandale.appthrottler.data.repository.ProfileRepository
 import com.rangandale.appthrottler.data.repository.StatsRepository
+import com.rangandale.appthrottler.domain.model.AppRule
 import com.rangandale.appthrottler.domain.model.NetworkStats
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
+import com.rangandale.appthrottler.domain.model.ThrottleParams
 import com.rangandale.appthrottler.domain.model.ThrottleProfile
 import com.rangandale.appthrottler.logging.ThrottleLogger
+import com.rangandale.appthrottler.vpn.flow.FlowPolicy
 import com.rangandale.appthrottler.vpn.ThrottleVpnService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -146,14 +149,66 @@ class VpnControlViewModel @Inject constructor(
 
     fun toggleSelectedApp(packageName: String) {
         updateState { state ->
-            val selected = state.currentConfig.selectedApps.toMutableSet()
+            val config = state.currentConfig
+            val selected = config.selectedApps.toMutableSet()
             if (!selected.add(packageName)) selected.remove(packageName)
-            state.copy(currentConfig = state.currentConfig.copy(selectedApps = selected.sorted()))
+            state.copy(
+                currentConfig = config.copy(
+                    selectedApps = selected.sorted(),
+                    // A rule only means something while its app is routed.
+                    appRules = config.appRules.filter { it.packageName in selected },
+                ),
+            )
         }
     }
 
     fun clearSelectedApps() {
-        updateState { it.copy(currentConfig = it.currentConfig.copy(selectedApps = emptyList())) }
+        updateState { it.copy(currentConfig = it.currentConfig.copy(selectedApps = emptyList(), appRules = emptyList())) }
+    }
+
+    /** Changes the rule of a routed app; a rule that says nothing special is dropped. */
+    fun updateAppRule(packageName: String, transform: (AppRule) -> AppRule) {
+        updateState { state ->
+            val config = state.currentConfig
+            if (packageName !in config.selectedApps) return@updateState state
+            val updated = transform(config.ruleFor(packageName) ?: AppRule(packageName))
+            val others = config.appRules.filter { it.packageName != packageName }
+            val rules = if (updated.isDefault) others else (others + updated).sortedBy { it.packageName }
+            state.copy(currentConfig = config.copy(appRules = rules))
+        }
+    }
+
+    /** Gives a routed app its own throttle values, copied from [profile]; null returns it to the session settings. */
+    fun setAppProfile(packageName: String, profile: ThrottleProfile?) {
+        updateAppRule(packageName) { rule ->
+            rule.copy(
+                throttle = profile?.let {
+                    ThrottleParams(
+                        it.downloadSpeedKbps, it.uploadSpeedKbps, it.latencyMs, it.jitterMs, it.packetLossPercent,
+                    )
+                },
+                throttleName = profile?.name,
+            )
+        }
+    }
+
+    fun addBlockedDomain(input: String): Boolean {
+        val domain = FlowPolicy.normalizeDomain(input)
+        if (domain == null || '.' !in domain) {
+            showMessage("Enter a domain such as example.com")
+            return false
+        }
+        updateState { state ->
+            val domains = (state.currentConfig.blockedDomains + domain).distinct().sorted()
+            state.copy(currentConfig = state.currentConfig.copy(blockedDomains = domains))
+        }
+        return true
+    }
+
+    fun removeBlockedDomain(domain: String) {
+        updateState { state ->
+            state.copy(currentConfig = state.currentConfig.copy(blockedDomains = state.currentConfig.blockedDomains - domain))
+        }
     }
 
     /**
@@ -162,14 +217,17 @@ class VpnControlViewModel @Inject constructor(
      */
     fun loadProfile(profile: ThrottleProfile) {
         updateState { state ->
+            val apps = profile.selectedAppPackages.ifEmpty { state.currentConfig.selectedApps }
             state.copy(
-                currentConfig = ThrottleConfig(
-                    selectedApps = profile.selectedAppPackages.ifEmpty { state.currentConfig.selectedApps },
+                // Per-app rules and blocked domains are not part of a profile; they stay as set.
+                currentConfig = state.currentConfig.copy(
+                    selectedApps = apps,
                     downloadSpeedKbps = profile.downloadSpeedKbps,
                     uploadSpeedKbps = profile.uploadSpeedKbps,
                     latencyMs = profile.latencyMs,
                     jitterMs = profile.jitterMs,
                     packetLossPercent = profile.packetLossPercent,
+                    appRules = state.currentConfig.appRules.filter { it.packageName in apps },
                 ),
                 profileName = profile.name,
             )

@@ -1,6 +1,6 @@
 package com.rangandale.appthrottler.presentation.ui
 
-import com.rangandale.appthrottler.domain.model.ThrottleConfig
+import com.rangandale.appthrottler.domain.model.ThrottleParams
 import java.util.Locale
 import kotlin.math.floor
 import kotlin.math.ln
@@ -29,9 +29,12 @@ fun formatBytes(bytes: Long): String = when {
 fun formatLatency(latencyMs: Int, jitterMs: Int): String =
     if (jitterMs > 0) "$latencyMs ms ± $jitterMs ms" else "$latencyMs ms"
 
+fun formatClockTime(epochMs: Long): String =
+    java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date(epochMs))
+
 fun formatPacketLoss(percent: Float): String = "${String.format(Locale.US, "%.1f", percent)}%"
 
-fun ThrottleConfig.summary(): String =
+fun ThrottleParams.summary(): String =
     "↓ ${formatSpeedLimit(downloadSpeedKbps)} · ↑ ${formatSpeedLimit(uploadSpeedKbps)} · " +
         "${formatLatency(latencyMs, jitterMs)} · ${formatPacketLoss(packetLossPercent)} loss"
 

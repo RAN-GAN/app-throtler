@@ -86,6 +86,19 @@ class TokenBucketTest {
     }
 
     @Test
+    fun `reserve turns a shortfall into a wait and refuses when the queue is too long`() {
+        val bucket = bucket(80) // 10,000 bytes per second, 4,096 byte bucket
+        assertEquals(0L, bucket.reserve(4_096, maxWaitMs = 1_000))
+        assertEquals(150L, bucket.reserve(1_500, maxWaitMs = 1_000))
+        assertEquals(300L, bucket.reserve(1_500, maxWaitMs = 1_000)) // queued behind the first
+        assertEquals(-1L, bucket.reserve(1_500, maxWaitMs = 400)) // would wait 450 ms: dropped
+        assertEquals(350L, bucket.reserve(500, maxWaitMs = 400)) // the refused packet booked nothing
+        advanceMs(350)
+        assertEquals(0L, bucket.reserve(0, maxWaitMs = 0))
+        assertEquals(0L, bucket(0).reserve(1_000_000, maxWaitMs = 0))
+    }
+
+    @Test
     fun `refund returns unused tokens`() {
         val bucket = bucket(80)
         assertEquals(4_096, bucket.consumeUpTo(10_000))

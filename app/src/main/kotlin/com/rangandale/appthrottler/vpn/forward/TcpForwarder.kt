@@ -7,6 +7,14 @@ import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_FIN
 import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_PSH
 import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_RST
 import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_SYN
+import com.rangandale.appthrottler.vpn.flow.FlowKey
+import com.rangandale.appthrottler.vpn.flow.FlowOwners
+import com.rangandale.appthrottler.vpn.flow.FlowPolicy
+import com.rangandale.appthrottler.vpn.flow.FlowRecord
+import com.rangandale.appthrottler.vpn.flow.FlowRegistry
+import com.rangandale.appthrottler.vpn.flow.FlowState
+import com.rangandale.appthrottler.vpn.flow.HostSniffer
+import com.rangandale.appthrottler.vpn.throttle.ShaperSet
 import com.rangandale.appthrottler.vpn.throttle.TokenBucket
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -31,7 +39,10 @@ import kotlin.random.Random
  * retransmits anything dropped by the loss filter), honours the client's receive window, and
  * advertises its own window from the amount of data still waiting to be written to the server.
  * Download throttling is plain backpressure — bytes are only read from the server socket when
- * the download bucket has tokens.
+ * the owning app's download bucket has tokens.
+ *
+ * Each connection is attributed to the app that opened it, which decides whether it is refused
+ * ([FlowPolicy]) and which limits apply ([ShaperSet]), and is reported to the [FlowRegistry].
  *
  * Client packets arrive on the caller's thread via [forward]; server sockets are serviced by a
  * single selector thread. Per-connection state is guarded by the connection's monitor.
@@ -39,7 +50,9 @@ import kotlin.random.Random
 class TcpForwarder(
     private val protect: (Socket) -> Boolean,
     private val tun: TunWriter,
-    private val downloadBucket: TokenBucket,
+    private val shapers: ShaperSet,
+    private val policy: FlowPolicy,
+    private val owners: FlowOwners,
     mtu: Int,
 ) {
     data class TcpKey(val srcIp: Int, val srcPort: Int, val dstIp: Int, val dstPort: Int)
@@ -62,8 +75,14 @@ class TcpForwarder(
         val clientIsn: Int,
         val mss: Int,
         var clientWindow: Int,
+        val uid: Int,
+        val record: FlowRecord,
+        val downloadBucket: TokenBucket,
     ) {
         var state = State.CONNECTING
+
+        /** Whether the first client bytes were already inspected for a host name. */
+        var sniffed = false
         var closed = false
 
         /** Next sequence number expected from the client. */
@@ -107,7 +126,10 @@ class TcpForwarder(
             thread.interrupt()
             runCatching { thread.join(JOIN_TIMEOUT_MS) }
         }
-        connections.values.forEach { runCatching { it.channel.close() } }
+        connections.values.forEach { conn ->
+            runCatching { conn.channel.close() }
+            FlowRegistry.close(conn.record)
+        }
         connections.clear()
         interestUpdates.clear()
         runCatching { selector.close() }
@@ -140,6 +162,7 @@ class TcpForwarder(
         val dataLen = totalLen - dataStart
 
         if (flags and TCP_RST != 0) {
+            // Clients routinely abandon connections this way (e.g. a browser leaving a page).
             connections[key]?.let { conn -> synchronized(conn) { close(conn) } }
             return
         }
@@ -156,6 +179,7 @@ class TcpForwarder(
             if (dataLen > 0 || flags and TCP_FIN != 0) rejectUnknown(key, seq, ack, flags, dataLen)
             return
         }
+        conn.record.addUp(packet.size)
         synchronized(conn) { handleSegment(conn, seq, ack, flags, window, packet, dataStart, dataLen) }
     }
 
@@ -169,6 +193,15 @@ class TcpForwarder(
                 }
                 close(existing)
             }
+        }
+
+        val uid = owners.resolve(FlowKey(IpPacket.PROTO_TCP, key.srcIp, key.srcPort, key.dstIp, key.dstPort))
+        val encryptedDns = key.dstPort == DNS_OVER_TLS_PORT && policy.refusesEncryptedDns
+        if (encryptedDns || policy.blocks(uid)) {
+            val label = if (encryptedDns) "encrypted DNS (refused so domain rules can apply)" else null
+            FlowRegistry.blocked(IpPacket.PROTO_TCP, uid, key.srcPort, key.dstIp, key.dstPort, hostname = label)
+            sendReset(key, seq = 0, ack = clientIsn + 1, flags = TCP_RST or TCP_ACK)
+            return
         }
 
         var channel: SocketChannel? = null
@@ -185,7 +218,8 @@ class TcpForwarder(
             return
         }
 
-        val conn = Connection(key, channel, clientIsn, mss, window)
+        val record = FlowRegistry.open(IpPacket.PROTO_TCP, uid, key.srcPort, key.dstIp, key.dstPort)
+        val conn = Connection(key, channel, clientIsn, mss, window, uid, record, shapers.forUid(uid).download)
         connections[key] = conn
         requestInterestUpdate(conn)
     }
@@ -220,6 +254,10 @@ class TcpForwarder(
             if (!clientDone && alreadyReceived >= 0 && alreadyReceived < dataLen) {
                 val accepted = minOf(dataLen - alreadyReceived, MAX_WINDOW - conn.pendingBytes)
                 if (accepted > 0) {
+                    if (!conn.sniffed) {
+                        conn.sniffed = true
+                        if (refusedByHostname(conn, packet, dataStart + alreadyReceived, accepted)) return
+                    }
                     if (!writeToServer(conn, packet, dataStart + alreadyReceived, accepted)) return
                     conn.rcvNxt += accepted
                 }
@@ -242,6 +280,18 @@ class TcpForwarder(
 
         if (replyWithAck) sendAck(conn)
         if (desiredInterest(conn) != conn.interestOps) requestInterestUpdate(conn)
+    }
+
+    /**
+     * Labels the flow with the host named in the client's first bytes (TLS SNI or HTTP Host),
+     * and resets it if that host is a blocked domain — before anything reaches the server.
+     */
+    private fun refusedByHostname(conn: Connection, packet: ByteArray, offset: Int, length: Int): Boolean {
+        val host = HostSniffer.hostOf(packet, offset, length) ?: return false
+        conn.record.hostname = host
+        if (!policy.blocksDomain(host)) return false
+        abort(conn, FlowState.BLOCKED)
+        return true
     }
 
     /** Writes client data to the server socket, queueing what the socket does not take. */
@@ -343,7 +393,7 @@ class TcpForwarder(
         } catch (e: IOException) {
             if (running.get()) ThrottleLogger.w(TAG, "TCP connect to ${describe(conn.key)} failed: ${e.message}")
             sendReset(conn.key, seq = 0, ack = conn.rcvNxt, flags = TCP_RST or TCP_ACK)
-            close(conn)
+            close(conn, FlowState.FAILED)
             return
         }
         if (connected) establish(conn)
@@ -390,22 +440,22 @@ class TcpForwarder(
 
         // Wait until the bucket covers a full segment: at low rates, reading whatever trickles
         // in would produce tiny segments whose headers outweigh their payload.
-        val granted = downloadBucket.consumeUpTo(minOf(room, buf.capacity()), minBytes = conn.mss)
+        val granted = conn.downloadBucket.consumeUpTo(minOf(room, buf.capacity()), minBytes = conn.mss)
         if (granted <= 0) return false
         // ...and keep to whole segments, leaving the remainder in the bucket for the next one.
         val allowed = if (granted > conn.mss) granted - granted % conn.mss else granted
-        downloadBucket.refund(granted - allowed)
+        conn.downloadBucket.refund(granted - allowed)
 
         buf.clear()
         buf.limit(allowed)
         val read = try {
             conn.channel.read(buf)
         } catch (e: IOException) {
-            downloadBucket.refund(allowed)
+            conn.downloadBucket.refund(allowed)
             abort(conn)
             return true
         }
-        downloadBucket.refund(allowed - read.coerceAtLeast(0))
+        conn.downloadBucket.refund(allowed - read.coerceAtLeast(0))
 
         if (read < 0) {
             onServerClosed(conn)
@@ -438,6 +488,11 @@ class TcpForwarder(
         for (conn in connections.values) {
             synchronized(conn) {
                 if (conn.closed || conn.state == State.CONNECTING) return@synchronized
+                // A rule can start to apply mid-connection (screen turned off, network changed).
+                if (policy.blocks(conn.uid)) {
+                    abort(conn, FlowState.BLOCKED)
+                    return@synchronized
+                }
                 val idleMs = now - conn.lastActivityMs
                 val timeoutMs = if (conn.state == State.ESTABLISHED) IDLE_TIMEOUT_MS else HALF_CLOSED_TIMEOUT_MS
                 if (idleMs > timeoutMs) {
@@ -449,7 +504,7 @@ class TcpForwarder(
                 // repeats its current ACK and window.
                 if (conn.state != State.SERVER_CLOSED && sendRoom(conn) <= 0 && now - conn.lastProbeMs >= PROBE_INTERVAL_MS) {
                     conn.lastProbeMs = now
-                    tun.write(buildPacket(conn, seq = conn.sndNxt - 1, flags = TCP_ACK))
+                    emit(conn, buildPacket(conn, seq = conn.sndNxt - 1, flags = TCP_ACK))
                 }
             }
         }
@@ -513,13 +568,18 @@ class TcpForwarder(
 
     private fun sendSynAck(conn: Connection) {
         val mssOption = byteArrayOf(2, 4, (conn.mss ushr 8).toByte(), conn.mss.toByte())
-        tun.write(buildPacket(conn, seq = conn.iss, flags = TCP_SYN or TCP_ACK, options = mssOption))
+        emit(conn, buildPacket(conn, seq = conn.iss, flags = TCP_SYN or TCP_ACK, options = mssOption))
     }
 
     private fun sendAck(conn: Connection) = send(conn, TCP_ACK)
 
     private fun send(conn: Connection, flags: Int, data: ByteArray = NO_DATA, offset: Int = 0, length: Int = 0) {
-        tun.write(buildPacket(conn, conn.sndNxt, flags, NO_DATA, data, offset, length))
+        emit(conn, buildPacket(conn, conn.sndNxt, flags, NO_DATA, data, offset, length))
+    }
+
+    private fun emit(conn: Connection, packet: ByteArray) {
+        tun.write(packet, conn.uid)
+        conn.record.addDown(packet.size)
     }
 
     private fun buildPacket(
@@ -554,20 +614,21 @@ class TcpForwarder(
     }
 
     /** Resets the client side and drops the connection. */
-    private fun abort(conn: Connection) {
+    private fun abort(conn: Connection, state: FlowState = FlowState.FAILED) {
         if (conn.closed) return
         if (conn.state == State.CONNECTING) {
             sendReset(conn.key, seq = 0, ack = conn.rcvNxt, flags = TCP_RST or TCP_ACK)
         } else {
             sendReset(conn.key, seq = conn.sndNxt, ack = conn.rcvNxt, flags = TCP_RST or TCP_ACK)
         }
-        close(conn)
+        close(conn, state)
     }
 
-    private fun close(conn: Connection) {
+    private fun close(conn: Connection, state: FlowState = FlowState.CLOSED) {
         if (conn.closed) return
         conn.closed = true
         connections.remove(conn.key, conn)
+        FlowRegistry.close(conn.record, state)
         conn.pending.clear()
         conn.pendingBytes = 0
         // Closing the channel also cancels its selection key.
@@ -583,6 +644,7 @@ class TcpForwarder(
         /** No window scaling is negotiated, so 64 KiB is the most either side can advertise. */
         private const val MAX_WINDOW = 65_535
         private const val DEFAULT_MSS = 536
+        private const val DNS_OVER_TLS_PORT = 853
         private const val SEGMENTS_PER_READ = 16
         private const val SELECT_TIMEOUT_MS = 250L
         private const val OUT_OF_TOKENS_SLEEP_MS = 5L

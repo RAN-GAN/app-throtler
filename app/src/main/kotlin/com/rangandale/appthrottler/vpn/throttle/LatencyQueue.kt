@@ -25,23 +25,29 @@ class DelayedPacket(
 }
 
 /**
- * Holds packets back for `baseMs ± jitterMs`. Release times never go backwards, so jitter
- * varies the delay without reordering packets (reordering would only trigger spurious TCP
- * retransmits, which is not what a latency setting is meant to simulate).
+ * Holds packets back for `baseMs ± jitterMs` (plus any wait imposed by rate limiting). Within a
+ * [Lane], release times never go backwards, so jitter varies the delay without reordering
+ * packets (reordering would only trigger spurious TCP retransmits, which is not what a latency
+ * setting is meant to simulate).
  */
 class LatencyQueue(
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
+    /** Packets that must keep their relative order, e.g. everything shaped by one profile. */
+    class Lane {
+        internal var lastReleaseAtMs = Long.MIN_VALUE
+    }
+
     private val queue = DelayQueue<DelayedPacket>()
-    private var lastReleaseAtMs = Long.MIN_VALUE
+    private val defaultLane = Lane()
     private var nextSequence = 0L
 
     @Synchronized
-    fun enqueue(data: ByteArray, baseMs: Int, jitterMs: Int) {
+    fun enqueue(data: ByteArray, baseMs: Int, jitterMs: Int, lane: Lane = defaultLane, extraDelayMs: Long = 0L) {
         val jitter = if (jitterMs <= 0) 0L else Random.nextLong(-jitterMs.toLong(), jitterMs.toLong() + 1)
-        val delay = (baseMs + jitter).coerceAtLeast(0L)
-        val releaseAt = maxOf(lastReleaseAtMs, clockMs() + delay)
-        lastReleaseAtMs = releaseAt
+        val delay = (baseMs + jitter).coerceAtLeast(0L) + extraDelayMs
+        val releaseAt = maxOf(lane.lastReleaseAtMs, clockMs() + delay)
+        lane.lastReleaseAtMs = releaseAt
         queue.offer(DelayedPacket(data, releaseAt, nextSequence++, clockMs))
     }
 

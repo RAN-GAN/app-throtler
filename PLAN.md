@@ -1,8 +1,8 @@
 # App Throttler — Android Network Condition Simulator
 
-> **Two parts.** The [roadmap](#roadmap-firewall-and-traffic-inspection) at the end is the
-> current plan for features that are not built yet. Everything before it is the original design
-> plan, kept for history: the implementation has since diverged from it in places (for example
+> **Two parts.** The [roadmap](#roadmap-firewall-and-traffic-inspection) at the end describes
+> the firewall and traffic-inspection features, which are now built. Everything before it is the
+> original design plan, kept for history: the implementation has since diverged from it in places (for example
 > the TCP forwarder, the statistics path and the UI components). For how the app works today see
 > [README.md](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 > [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
@@ -496,7 +496,9 @@ Once a packet arrives at the TUN interface you cannot tell which of the allowed 
 
 ## Roadmap: firewall and traffic inspection
 
-Status: **planned, nothing implemented.** Two feature sets, modelled on what NetGuard and
+Status: **implemented** (all seven steps), covered by JVM tests; see
+[Differences from this plan](#differences-from-this-plan) for where the result deviates, and
+`docs/DEVELOPMENT.md` for the on-device checklist. Two feature sets, modelled on what NetGuard and
 PCAPdroid do, built on the VPN tunnel the app already has:
 
 - **Firewall (NetGuard-style)** — block or allow network access per app.
@@ -605,3 +607,24 @@ Each step is shippable on its own and is verified on a physical device before th
   before step 3.
 - **Play Store policy** — packet capture and `QUERY_ALL_PACKAGES` both need a declared
   justification if the app is ever published.
+
+### Differences from this plan
+
+- **Rules are stored with the editor's config, not in Room.** Per-app rules and blocked domains
+  live in the `current_config` preferences next to the app selection they belong to, so there
+  is no `app_rules` table and no database migration.
+- **The Apps screen keeps its checkbox.** A selected app shows option chips (block, network
+  type, screen-off, own profile) instead of a three-way mode selector.
+- **Connections is a view inside a Traffic tab**, next to Logs, rather than a tab of its own.
+- **Upload shaping changed from blocking to scheduling.** Per-app profiles made a blocking
+  bucket unusable (one app would stall the others), so packets are now delayed by a computed
+  wait and dropped when that wait exceeds five seconds.
+- **Flow ownership is resolved in `PacketProcessor`**, before shaping, and reused by the
+  forwarders, instead of being looked up inside each forwarder.
+- **DNS-over-TLS is refused while any domain is blocked**, so that lookups fall back to plain
+  DNS the rules can see. This was not in the plan.
+- **Blocked domains also reset TCP connections by host name** (TLS SNI or HTTP Host), not only
+  at the DNS level.
+- **A per-app profile is a copy.** Picking a profile for an app copies its values into the
+  rule; it does not stay linked to the saved profile.
+- **Unknown owners are always allowed**; there is no setting for it.

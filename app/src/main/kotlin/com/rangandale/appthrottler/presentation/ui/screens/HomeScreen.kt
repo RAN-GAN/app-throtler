@@ -29,7 +29,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.rangandale.appthrottler.domain.model.AppTraffic
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
 import com.rangandale.appthrottler.presentation.ui.components.StatChip
 import com.rangandale.appthrottler.presentation.ui.formatBytes
@@ -127,6 +129,10 @@ fun HomeScreen(
             config = shownConfig,
         )
 
+        if (uiState.networkStats.apps.isNotEmpty() || uiState.networkStats.blockedAttempts > 0) {
+            AppTrafficCard(uiState.networkStats.apps, uiState.networkStats.blockedAttempts)
+        }
+
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(onClick = onChooseApps, modifier = Modifier.weight(1f)) { Text("Choose apps") }
             OutlinedButton(onClick = onEditSettings, modifier = Modifier.weight(1f)) { Text("Edit settings") }
@@ -168,14 +174,49 @@ private fun ConfigCard(title: String, config: ThrottleConfig) {
             ConfigRow("Latency", formatLatency(config.latencyMs, config.jitterMs))
             ConfigRow("Packet loss", formatPacketLoss(config.packetLossPercent))
             ConfigRow("Apps", "${config.selectedApps.size} selected")
+            val blockedApps = config.appRules.count { it.block }
+            val ownLimits = config.appRules.count { !it.block && it.throttle != null }
+            if (blockedApps > 0) ConfigRow("Blocked apps", blockedApps.toString())
+            if (ownLimits > 0) ConfigRow("Apps with their own limits", ownLimits.toString())
+            if (config.blockedDomains.isNotEmpty()) ConfigRow("Blocked domains", config.blockedDomains.size.toString())
         }
     }
 }
 
 @Composable
+private fun AppTrafficCard(apps: List<AppTraffic>, blockedAttempts: Long) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text = "This session by app", style = MaterialTheme.typography.titleMedium)
+            apps.take(MAX_APPS_SHOWN).forEach { app ->
+                ConfigRow(app.label, "↓ ${formatBytes(app.bytesIn)}  ↑ ${formatBytes(app.bytesOut)}")
+            }
+            if (apps.size > MAX_APPS_SHOWN) {
+                Text(
+                    text = "and ${apps.size - MAX_APPS_SHOWN} more — see Traffic",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (blockedAttempts > 0) ConfigRow("Blocked connection attempts", blockedAttempts.toString())
+        }
+    }
+}
+
+private const val MAX_APPS_SHOWN = 5
+
+@Composable
 private fun ConfigRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(text = label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         Text(text = value)
     }
 }

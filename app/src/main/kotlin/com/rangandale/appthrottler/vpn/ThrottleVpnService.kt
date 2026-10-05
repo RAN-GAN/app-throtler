@@ -4,30 +4,55 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.google.gson.Gson
 import com.rangandale.appthrottler.MainActivity
 import com.rangandale.appthrottler.R
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
 import com.rangandale.appthrottler.logging.ThrottleLogger
+import com.rangandale.appthrottler.vpn.capture.PacketCapture
+import com.rangandale.appthrottler.vpn.flow.FlowKey
+import com.rangandale.appthrottler.vpn.flow.FlowOwners
+import com.rangandale.appthrottler.vpn.flow.FlowPolicy
+import com.rangandale.appthrottler.vpn.flow.FlowRegistry
+import com.rangandale.appthrottler.vpn.forward.IpPacket
+import com.rangandale.appthrottler.vpn.throttle.ShaperSet
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 
 class ThrottleVpnService : VpnService() {
 
     private var packetProcessor: PacketProcessor? = null
     private var tunFd: ParcelFileDescriptor? = null
+
+    /** The running tunnel's rules; network and screen changes are pushed into it. */
+    @Volatile private var policy: FlowPolicy? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            policy?.screenOn = intent.action == Intent.ACTION_SCREEN_ON
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -51,7 +76,7 @@ class ThrottleVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // A null intent or a foreign action (e.g. a system restart) carries no config to run with.
-        val config = intent?.takeIf { it.action == ACTION_START }?.toThrottleConfig()
+        val config = intent?.takeIf { it.action == ACTION_START }?.let(::configOf)
         if (config == null) {
             tearDown()
             return Service.START_NOT_STICKY
@@ -72,7 +97,22 @@ class ThrottleVpnService : VpnService() {
         config.selectedApps.forEach { ThrottleLogger.i(TAG, "  → $it") }
 
         TrafficCounters.reset()
-        packetProcessor = PacketProcessor(config, newTunFd, this, MTU).also { it.start() }
+        FlowRegistry.reset()
+        val uids = uidsOf(config.selectedApps)
+        val rulesByUid = config.appRules.mapNotNull { rule -> uids[rule.packageName]?.let { it to rule } }.toMap()
+        val newPolicy = FlowPolicy(rulesByUid, config.blockedDomains)
+        val shapers = ShaperSet(
+            default = config.params,
+            overridesByUid = rulesByUid.mapNotNull { (uid, rule) -> rule.throttle?.let { uid to it } }.toMap(),
+        )
+        policy = newPolicy
+        watchDeviceState(newPolicy)
+        if (!canAttributeFlows && (newPolicy.hasRules || rulesByUid.isNotEmpty())) {
+            ThrottleLogger.w(TAG, "Per-app rules need Android 10 or newer — they are ignored on this device")
+        }
+
+        packetProcessor = PacketProcessor(config, newTunFd, this, shapers, newPolicy, FlowOwners(::ownerUid), MTU)
+            .also { it.start() }
         _activeConfig.value = config // reported only once the tunnel is really up
 
         return Service.START_NOT_STICKY
@@ -90,6 +130,8 @@ class ThrottleVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        unwatchDeviceState()
+        policy = null
         packetProcessor?.stop()
         packetProcessor = null
         try {
@@ -104,6 +146,7 @@ class ThrottleVpnService : VpnService() {
         val wasActive = _activeConfig.value != null
         _activeConfig.value = null
         stopTunnel()
+        PacketCapture.stop()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -170,6 +213,72 @@ class ThrottleVpnService : VpnService() {
         return servers.toList()
     }
 
+    private fun uidsOf(packages: List<String>): Map<String, Int> = packages.mapNotNull { pkg ->
+        try {
+            pkg to packageManager.getApplicationInfo(pkg, 0).uid
+        } catch (_: PackageManager.NameNotFoundException) {
+            null
+        }
+    }.toMap()
+
+    /** The app that owns a flow. Only VPN apps may ask, and only on Android 10+. */
+    private fun ownerUid(key: FlowKey): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return FlowOwners.UNKNOWN_UID
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.getConnectionOwnerUid(
+                key.protocol,
+                InetSocketAddress(IpPacket.addressOf(key.srcIp), key.srcPort),
+                InetSocketAddress(IpPacket.addressOf(key.dstIp), key.dstPort),
+            )
+        } catch (e: Exception) {
+            FlowOwners.UNKNOWN_UID
+        }
+    }
+
+    /** Keeps [target] informed about the network type and screen state its rules depend on. */
+    private fun watchDeviceState(target: FlowPolicy) {
+        target.screenOn = (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
+        ContextCompat.registerReceiver(
+            this,
+            screenReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        // This app is not routed through its own VPN, so its default network is the real one.
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                target.onWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                target.onMobile = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+            }
+
+            override fun onLost(network: Network) {
+                target.onWifi = false
+                target.onMobile = false
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not watch the default network", e)
+        }
+    }
+
+    private fun unwatchDeviceState() {
+        if (policy != null) runCatching { unregisterReceiver(screenReceiver) }
+        networkCallback?.let { callback ->
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            runCatching { cm.unregisterNetworkCallback(callback) }
+        }
+        networkCallback = null
+    }
+
     private fun buildNotification() = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_stat_throttle)
         .setContentTitle(getString(R.string.notification_title))
@@ -217,12 +326,10 @@ class ThrottleVpnService : VpnService() {
 
         const val ACTION_START = "com.rangandale.appthrottler.vpn.action.START"
         const val ACTION_STOP = "com.rangandale.appthrottler.vpn.action.STOP"
-        const val EXTRA_SELECTED_APPS = "extra_selected_apps"
-        const val EXTRA_DOWNLOAD_SPEED_KBPS = "extra_download_speed_kbps"
-        const val EXTRA_UPLOAD_SPEED_KBPS = "extra_upload_speed_kbps"
-        const val EXTRA_LATENCY_MS = "extra_latency_ms"
-        const val EXTRA_JITTER_MS = "extra_jitter_ms"
-        const val EXTRA_PACKET_LOSS_PERCENT = "extra_packet_loss_percent"
+        private const val EXTRA_CONFIG = "extra_config"
+
+        /** Attributing flows to apps (per-app rules, the connections list) needs Android 10. */
+        val canAttributeFlows: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
         private const val CHANNEL_ID = "app_throttler_vpn"
         private const val NOTIFICATION_ID = 1001
@@ -235,25 +342,17 @@ class ThrottleVpnService : VpnService() {
         fun startIntent(context: Context, config: ThrottleConfig): Intent =
             Intent(context, ThrottleVpnService::class.java).apply {
                 action = ACTION_START
-                putStringArrayListExtra(EXTRA_SELECTED_APPS, ArrayList(config.selectedApps))
-                putExtra(EXTRA_DOWNLOAD_SPEED_KBPS, config.downloadSpeedKbps)
-                putExtra(EXTRA_UPLOAD_SPEED_KBPS, config.uploadSpeedKbps)
-                putExtra(EXTRA_LATENCY_MS, config.latencyMs)
-                putExtra(EXTRA_JITTER_MS, config.jitterMs)
-                putExtra(EXTRA_PACKET_LOSS_PERCENT, config.packetLossPercent)
+                putExtra(EXTRA_CONFIG, Gson().toJson(config))
             }
+
+        internal fun configOf(intent: Intent): ThrottleConfig? = try {
+            intent.getStringExtra(EXTRA_CONFIG)?.let { Gson().fromJson(it, ThrottleConfig::class.java) }
+        } catch (e: Exception) {
+            null
+        }
 
         fun stopIntent(context: Context): Intent = Intent(context, ThrottleVpnService::class.java).apply {
             action = ACTION_STOP
         }
     }
 }
-
-private fun Intent.toThrottleConfig(): ThrottleConfig = ThrottleConfig(
-    selectedApps = getStringArrayListExtra(ThrottleVpnService.EXTRA_SELECTED_APPS) ?: arrayListOf(),
-    downloadSpeedKbps = getIntExtra(ThrottleVpnService.EXTRA_DOWNLOAD_SPEED_KBPS, 0),
-    uploadSpeedKbps = getIntExtra(ThrottleVpnService.EXTRA_UPLOAD_SPEED_KBPS, 0),
-    latencyMs = getIntExtra(ThrottleVpnService.EXTRA_LATENCY_MS, 0),
-    jitterMs = getIntExtra(ThrottleVpnService.EXTRA_JITTER_MS, 0),
-    packetLossPercent = getFloatExtra(ThrottleVpnService.EXTRA_PACKET_LOSS_PERCENT, 0f),
-)

@@ -4,8 +4,16 @@ import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_ACK
 import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_FIN
 import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_RST
 import com.rangandale.appthrottler.vpn.forward.IpPacket.TCP_SYN
-import com.rangandale.appthrottler.vpn.throttle.TokenBucket
+import com.rangandale.appthrottler.domain.model.AppRule
+import com.rangandale.appthrottler.domain.model.ThrottleParams
+import com.rangandale.appthrottler.vpn.flow.FlowOwners
+import com.rangandale.appthrottler.vpn.flow.FlowPolicy
+import com.rangandale.appthrottler.vpn.flow.FlowRegistry
+import com.rangandale.appthrottler.vpn.flow.FlowState
+import com.rangandale.appthrottler.vpn.flow.HostnameCache
+import com.rangandale.appthrottler.vpn.throttle.ShaperSet
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -45,6 +53,14 @@ class ForwarderTest {
     private val closeables = ArrayList<AutoCloseable>()
     private var tcp: TcpForwarder? = null
     private var udp: UdpForwarder? = null
+
+    private val appUid = 10_123
+    private val owners = FlowOwners { appUid }
+
+    @Before
+    fun setUp() {
+        FlowRegistry.reset()
+    }
 
     @After
     fun tearDown() {
@@ -92,11 +108,36 @@ class ForwarderTest {
         }
     }
 
-    private fun startTcp(downloadKbps: Int = 0): TcpForwarder =
-        TcpForwarder({ true }, tun, TokenBucket(downloadKbps), mtu = 1500).also {
+    private fun startTcp(downloadKbps: Int = 0, policy: FlowPolicy = FlowPolicy()): TcpForwarder =
+        TcpForwarder({ true }, tun, ShaperSet(ThrottleParams(downloadSpeedKbps = downloadKbps)), policy, owners, mtu = 1500).also {
             tcp = it
             it.start()
         }
+
+    private fun startUdp(params: ThrottleParams = ThrottleParams(), policy: FlowPolicy = FlowPolicy()): UdpForwarder =
+        UdpForwarder({ true }, tun, ShaperSet(params), policy, owners, mtu = 1500).also {
+            udp = it
+            it.start()
+        }
+
+    private fun blockAll(vararg domains: String, blockApp: Boolean = false) = FlowPolicy(
+        rulesByUid = if (blockApp) mapOf(appUid to AppRule("com.example.app", block = true)) else emptyMap(),
+        blockedDomains = domains.toList(),
+    ).also { it.onWifi = true }
+
+    /** A DNS message with one question for [name]; with [address] it is a reply carrying one A record. */
+    private fun dnsMessage(name: String, address: ByteArray? = null): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(byteArrayOf(0x12, 0x34, if (address != null) 0x81.toByte() else 0x01, if (address != null) 0x80.toByte() else 0x00))
+        out.write(byteArrayOf(0, 1, 0, if (address != null) 1 else 0, 0, 0, 0, 0))
+        name.split('.').forEach { label -> out.write(label.length); out.write(label.toByteArray()) }
+        out.write(byteArrayOf(0, 0, 1, 0, 1)) // root, type A, class IN
+        if (address != null) {
+            out.write(byteArrayOf(0xC0.toByte(), 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4)) // pointer to the question name
+            out.write(address)
+        }
+        return out.toByteArray()
+    }
 
     private fun listen(): ServerSocket = ServerSocket(0, 10, loopback).also { closeables.add(it) }
 
@@ -315,10 +356,120 @@ class ForwarderTest {
     }
 
     @Test
+    fun `tcp flows are recorded with their owner and traffic`() {
+        val forwarder = startTcp()
+        val server = listen()
+        val port = server.localPort
+        val (socket, serverSeq) = forwarder.handshake(server, clientIsn = 0)
+
+        forwarder.fromClient(port, seq = 1, ack = serverSeq, flags = TCP_ACK, data = "GET / HTTP/1.1\r\nHost: Example.org\r\n\r\n".toByteArray())
+        nextPacket()
+        val open = FlowRegistry.snapshot().single()
+        assertEquals(FlowState.OPEN, open.state)
+        assertEquals(appUid, open.uid)
+        assertEquals(port, open.remotePort)
+        assertEquals("example.org", open.hostname)
+        assertTrue(open.bytesUp > 0 && open.bytesDown > 0)
+
+        socket.setSoLinger(true, 0)
+        socket.close()
+        assertTrue(nextPacket().has(TCP_RST))
+        assertEquals(FlowState.FAILED, FlowRegistry.snapshot().single().state)
+        assertEquals(open.bytesUp + open.bytesDown, FlowRegistry.appTotals().single().let { it.bytesUp + it.bytesDown })
+    }
+
+    @Test
+    fun `tcp refuses a blocked app and counts the attempts`() {
+        val forwarder = startTcp(policy = blockAll(blockApp = true))
+        val server = listen().also { it.soTimeout = 300 }
+
+        repeat(2) {
+            forwarder.fromClient(server.localPort, seq = 10, ack = 0, flags = TCP_SYN)
+            val reset = nextPacket()
+            assertTrue(reset.has(TCP_RST))
+            assertEquals(11, reset.ack)
+        }
+        assertTrue(runCatching { server.accept() }.isFailure) // the real server was never contacted
+
+        val blocked = FlowRegistry.snapshot().single()
+        assertEquals(FlowState.BLOCKED, blocked.state)
+        assertEquals(2, blocked.attempts)
+        assertEquals(2L, FlowRegistry.totalBlockedAttempts)
+    }
+
+    @Test
+    fun `tcp block rule depends on network type and screen state`() {
+        val policy = FlowPolicy(mapOf(appUid to AppRule("app", block = true, blockOnWifi = false, onlyWhenScreenOff = true)))
+        policy.onMobile = true
+        assertEquals(false, policy.blocks(appUid)) // screen is on
+        policy.screenOn = false
+        assertEquals(true, policy.blocks(appUid))
+        policy.onMobile = false
+        policy.onWifi = true
+        assertEquals(false, policy.blocks(appUid)) // Wi-Fi is allowed
+        assertEquals(false, policy.blocks(FlowOwners.UNKNOWN_UID))
+    }
+
+    @Test
+    fun `tcp resets a connection to a blocked domain before any data reaches the server`() {
+        val forwarder = startTcp(policy = blockAll("example.org"))
+        val server = listen()
+        val (socket, serverSeq) = forwarder.handshake(server, clientIsn = 0)
+
+        val request = "GET / HTTP/1.1\r\nHost: ads.example.org\r\n\r\n".toByteArray()
+        forwarder.fromClient(server.localPort, seq = 1, ack = serverSeq, flags = TCP_ACK, data = request)
+        assertTrue(nextPacket().has(TCP_RST))
+        assertEquals(-1, socket.getInputStream().read()) // closed without receiving a byte
+
+        val flow = FlowRegistry.snapshot().single()
+        assertEquals(FlowState.BLOCKED, flow.state)
+        assertEquals("ads.example.org", flow.hostname)
+    }
+
+    @Test
+    fun `encrypted dns is refused only while domain rules exist`() {
+        val forwarder = startTcp(policy = blockAll("tracker.test"))
+        forwarder.fromClient(853, seq = 5, ack = 0, flags = TCP_SYN)
+        assertTrue(nextPacket().has(TCP_RST))
+        assertEquals(FlowState.BLOCKED, FlowRegistry.snapshot().single().state)
+        assertEquals(false, FlowPolicy().refusesEncryptedDns)
+    }
+
+    @Test
+    fun `dns query for a blocked domain is answered locally with nxdomain`() {
+        val server = DatagramSocket(0, loopback).also { closeables.add(it); it.soTimeout = 300 }
+        val forwarder = startUdp(policy = blockAll("tracker.test"))
+
+        val query = dnsMessage("cdn.tracker.test")
+        // Port 53 is what makes it DNS; nothing listens there on loopback, and nothing must be sent.
+        forwarder.forward(IpPacket.buildUdp(clientIp, clientPort, serverIp, 53, query, query.size, mtu = 1500).single())
+
+        val reply = nextPacket()
+        assertEquals(53, reply.srcPort)
+        assertEquals(clientPort, reply.dstPort)
+        assertEquals(0x12, reply.payload[0].toInt())
+        assertEquals(0x34, reply.payload[1].toInt())
+        assertTrue(reply.payload[2].toInt() and 0x80 != 0) // a response
+        assertEquals(3, reply.payload[3].toInt() and 0x0F) // NXDOMAIN
+        assertEquals("cdn.tracker.test", FlowRegistry.snapshot().single().hostname)
+        assertTrue(runCatching { server.receive(DatagramPacket(ByteArray(8), 8)) }.isFailure)
+    }
+
+    @Test
+    fun `udp drops datagrams of a blocked app`() {
+        val server = DatagramSocket(0, loopback).also { closeables.add(it); it.soTimeout = 300 }
+        val forwarder = startUdp(policy = blockAll(blockApp = true))
+
+        val data = "ping".toByteArray()
+        forwarder.forward(IpPacket.buildUdp(clientIp, clientPort, serverIp, server.localPort, data, data.size, mtu = 1500).single())
+        assertTrue(runCatching { server.receive(DatagramPacket(ByteArray(8), 8)) }.isFailure)
+        assertEquals(FlowState.BLOCKED, FlowRegistry.snapshot().single().state)
+    }
+
+    @Test
     fun `udp relays a datagram and its reply`() {
         val server = DatagramSocket(0, loopback).also { closeables.add(it); it.soTimeout = 3_000 }
-        val forwarder = UdpForwarder({ true }, tun, TokenBucket(0), packetLossPercent = 0f, mtu = 1500)
-            .also { udp = it; it.start() }
+        val forwarder = startUdp()
 
         val query = "ping".toByteArray()
         forwarder.forward(
@@ -350,8 +501,7 @@ class ForwarderTest {
     @Test
     fun `udp with full packet loss delivers nothing back`() {
         val server = DatagramSocket(0, loopback).also { closeables.add(it); it.soTimeout = 3_000 }
-        val forwarder = UdpForwarder({ true }, tun, TokenBucket(0), packetLossPercent = 100f, mtu = 1500)
-            .also { udp = it; it.start() }
+        val forwarder = startUdp(ThrottleParams(packetLossPercent = 100f))
 
         val query = "ping".toByteArray()
         forwarder.forward(

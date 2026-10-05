@@ -1,11 +1,11 @@
 # App Throttler
 
-An Android app that simulates a slow or unreliable network for the apps you pick — and only
-those apps. It needs no root: it runs a local VPN, receives the selected apps' traffic, applies
-speed limits, latency, jitter and packet loss, and relays it to the internet.
+An Android app that puts the network of the apps you pick — and only those apps — under your
+control. It needs no root: it runs a local VPN, receives the selected apps' traffic, and can slow
+it down, cut it off, or show you what it is doing before relaying it to the internet.
 
-It is meant for developers and testers who want to see how an app behaves on 2G, 3G or a lossy
-connection on a real device.
+It is meant for developers and testers who want to see how an app behaves on 2G, 3G, a lossy
+connection or no connection at all, on a real device, and which servers it talks to.
 
 ## Features
 
@@ -16,7 +16,17 @@ connection on a real device.
 - **Saved profiles.** Store a set of values (and the app selection) under a name and reuse it.
 - **Live statistics.** Current download and upload rate plus session totals.
 - **Apply while running.** Change the settings and apply them without stopping the VPN.
+- **Per-app limits.** Give one app its own profile while the others share the session settings.
+- **Firewall.** Block an app's network access — always, only on Wi-Fi or mobile data, or only
+  while the screen is off — and block domains for all selected apps.
+- **Connections list.** See every connection the selected apps make: app, host, port, bytes
+  and whether it was blocked.
+- **Packet capture.** Save the traffic to a `.pcap` file and open it in Wireshark.
 - **In-app log.** Tunnel events, connection errors and the previous session's crash report.
+
+Per-app limits, the firewall and the app column of the connections list need Android 10 or
+newer, because older versions cannot tell a VPN which app owns a connection. Throttling works
+on every supported version.
 
 ## Requirements
 
@@ -51,8 +61,42 @@ override it for one build:
 4. Use the selected apps. Home shows the traffic flowing through the throttle.
 5. Press **Stop**, or use the **Stop** action on the notification.
 
-While the VPN is running, changing a setting or the app selection shows an **Apply** button;
-the running tunnel keeps its old values until you press it.
+While the VPN is running, changing a setting, a rule or the app selection shows an **Apply**
+button; the running tunnel keeps its old values until you press it.
+
+### Per-app rules
+
+A selected app shows a row of options under its name on the **Apps** tab:
+
+| Option | Effect |
+|---|---|
+| **Throttle: session settings** | The default: the app shares the values from the Settings tab. Tap to pick a preset or saved profile for this app alone. |
+| **Block** | Refuses the app's connections. |
+| **On Wi-Fi** / **On mobile data** | Limit the block to one kind of network. |
+| **Only when screen is off** | Block only while the screen is off, to test background work losing its network. |
+
+A per-app profile is copied when you pick it; later edits to the saved profile do not change the
+rule. Rules are not part of saved profiles — they stay as set when you load one.
+
+### Blocked domains
+
+**Settings → Blocked domains** lists domains no selected app may reach, including their
+subdomains. Name lookups for them are answered with "no such domain", and TLS or HTTP
+connections that name them are reset.
+
+### Traffic
+
+The **Traffic** tab has two views:
+
+- **Connections** — live and recent connections, newest first, with search and filters by app
+  and "blocked only". Tap one for details. Repeated attempts at a blocked destination are
+  shown as one entry with a count.
+- **Logs** — tunnel events and errors.
+
+**Capture** on the Connections view asks where to save a `.pcap` file and records every packet
+crossing the tunnel until you press **Stop capture**, the VPN stops, or the file reaches 100 MB.
+With an app filter set, only that app's packets are captured. Encrypted traffic is recorded as
+it is on the wire; nothing is decrypted.
 
 ### Settings
 
@@ -65,7 +109,7 @@ the running tunnel keeps its old values until you press it.
 | Packet loss | 0 – 30 % | Share of packets dropped at random |
 
 The speed sliders are logarithmic, and the far right end means Unlimited. All selected apps share
-one set of limits.
+these values unless an app is given its own profile.
 
 ### Presets
 
@@ -95,8 +139,16 @@ Presets carry no app list, so loading one keeps the apps you have selected.
   to UDP replies. The app terminates TCP locally, so there is no downstream TCP packet to drop.
 - **One VPN at a time.** Android allows a single active VPN, so App Throttler cannot run
   alongside another VPN app, and it cannot be used as an always-on VPN.
-- **One profile per session.** Android does not reveal which app sent a packet, so apps cannot
-  have different limits within one session.
+- **Android 10+ for per-app features.** On Android 5–9 there is one profile per session and
+  no firewall, because the system does not reveal which app owns a connection.
+- **Domain rules depend on visible host names.** They see plain DNS, TLS server names and HTTP
+  Host headers. While any domain is blocked, DNS-over-TLS is refused so lookups fall back to
+  plain DNS; with Private DNS set to a fixed provider, name lookups in selected apps then fail.
+  DNS-over-HTTPS inside an app, and QUIC connections to an address the app already knows, are
+  not caught.
+- **Blocking covers the selected apps only.** This is not a device-wide firewall.
+- **System lookups are listed separately.** Name lookups are made by Android on an app's
+  behalf, so they appear under "System (DNS and services)" rather than under the app.
 
 ## Troubleshooting
 
@@ -107,6 +159,9 @@ Presets carry no app list, so loading one keeps the apps you have selected.
 | VPN stops by itself | Another VPN app took over, or the VPN was disconnected in system settings |
 | A throttled app shows no connectivity | Check the Logs tab for connect errors; the app may rely on IPv6-only or ICMP |
 | Changed settings have no effect | Press **Apply** — a running tunnel keeps the values it started with |
+| A blocked app still connects | Its rule may be limited to the other network type or to screen-off; on Android 9 and older, rules are ignored |
+| Names stop resolving after adding a blocked domain | Private DNS is set to a fixed provider; switch it to Automatic or Off |
+| Connections show an address instead of a name | The name was resolved before the VPN started, or through encrypted DNS |
 
 All log lines are also written to logcat:
 
@@ -118,4 +173,5 @@ adb logcat -s AppThrottler
 
 - [Architecture](docs/ARCHITECTURE.md) — how the tunnel, the forwarders and the throttle work.
 - [Development](docs/DEVELOPMENT.md) — project layout, tests and on-device verification.
-- [PLAN.md](PLAN.md) — the original design plan, kept for history.
+- [PLAN.md](PLAN.md) — the original design plan and the firewall/inspection roadmap, kept for
+  history.

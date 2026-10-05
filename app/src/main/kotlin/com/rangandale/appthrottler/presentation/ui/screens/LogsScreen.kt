@@ -31,10 +31,7 @@ import com.rangandale.appthrottler.logging.ThrottleLogger
 import com.rangandale.appthrottler.presentation.viewmodel.LogsViewModel
 
 @Composable
-fun LogsScreen(
-    contentPadding: PaddingValues,
-    viewModel: LogsViewModel,
-) {
+fun LogsScreen(viewModel: LogsViewModel) {
     val entries by viewModel.entries.collectAsState()
     val listState = rememberLazyListState()
 
@@ -43,9 +40,7 @@ fun LogsScreen(
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(contentPadding),
+        modifier = Modifier.fillMaxSize(),
     ) {
         Row(
             modifier = Modifier
@@ -54,7 +49,11 @@ fun LogsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "Logs", style = MaterialTheme.typography.headlineLarge)
+            Text(
+                text = "Tunnel events and errors",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             OutlinedButton(onClick = viewModel::clear) {
                 Text("Clear")
             }

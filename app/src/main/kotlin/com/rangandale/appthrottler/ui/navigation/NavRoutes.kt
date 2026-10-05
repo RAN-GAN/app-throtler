@@ -13,10 +13,10 @@ sealed class NavRoute(val route: String, val title: String, val icon: ImageVecto
     data object Apps : NavRoute("apps", "Apps", Icons.AutoMirrored.Filled.List)
     data object Settings : NavRoute("settings", "Settings", Icons.Default.Settings)
     data object Profiles : NavRoute("profiles", "Profiles", Icons.Default.Star)
-    data object Logs : NavRoute("logs", "Logs", Icons.Default.Info)
+    data object Traffic : NavRoute("traffic", "Traffic", Icons.Default.Info)
 
     companion object {
         val bottomBarRoutes: List<NavRoute>
-            get() = listOf(Home, Apps, Settings, Profiles, Logs)
+            get() = listOf(Home, Apps, Settings, Profiles, Traffic)
     }
 }

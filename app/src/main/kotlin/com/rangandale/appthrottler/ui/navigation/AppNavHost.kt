@@ -33,10 +33,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.rangandale.appthrottler.presentation.ui.screens.AppListScreen
 import com.rangandale.appthrottler.presentation.ui.screens.HomeScreen
-import com.rangandale.appthrottler.presentation.ui.screens.LogsScreen
 import com.rangandale.appthrottler.presentation.ui.screens.ProfilesScreen
 import com.rangandale.appthrottler.presentation.ui.screens.SettingsScreen
+import com.rangandale.appthrottler.presentation.ui.screens.TrafficScreen
 import com.rangandale.appthrottler.presentation.viewmodel.AppListViewModel
+import com.rangandale.appthrottler.presentation.viewmodel.ConnectionsViewModel
 import com.rangandale.appthrottler.presentation.viewmodel.LogsViewModel
 import com.rangandale.appthrottler.presentation.viewmodel.VpnControlViewModel
 
@@ -46,6 +47,7 @@ fun AppThrottlerApp(modifier: Modifier = Modifier) {
     val vpnViewModel = hiltViewModel<VpnControlViewModel>()
     val appListViewModel = hiltViewModel<AppListViewModel>()
     val logsViewModel = hiltViewModel<LogsViewModel>()
+    val connectionsViewModel = hiltViewModel<ConnectionsViewModel>()
 
     val uiState by vpnViewModel.uiState.collectAsState()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -135,8 +137,13 @@ fun AppThrottlerApp(modifier: Modifier = Modifier) {
             composable(NavRoute.Profiles.route) {
                 ProfilesScreen(contentPadding = innerPadding, viewModel = vpnViewModel, onStartVpn = startVpn)
             }
-            composable(NavRoute.Logs.route) {
-                LogsScreen(contentPadding = innerPadding, viewModel = logsViewModel)
+            composable(NavRoute.Traffic.route) {
+                TrafficScreen(
+                    contentPadding = innerPadding,
+                    connectionsViewModel = connectionsViewModel,
+                    logsViewModel = logsViewModel,
+                    vpnRunning = uiState.isVpnRunning,
+                )
             }
         }
     }

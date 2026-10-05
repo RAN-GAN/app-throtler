@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.rangandale.appthrottler.domain.model.AppRule
 import com.rangandale.appthrottler.domain.model.ThrottleConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -19,15 +20,19 @@ class CurrentConfigRepository @Inject constructor(
         context.getSharedPreferences("current_config", Context.MODE_PRIVATE)
 
     private val listType = object : TypeToken<List<String>>() {}.type
+    private val rulesType = object : TypeToken<List<AppRule>>() {}.type
+
+    private fun <T> readList(key: String, type: java.lang.reflect.Type): List<T> = try {
+        prefs.getString(key, null)?.let { gson.fromJson<List<T>>(it, type) } ?: emptyList()
+    } catch (e: Exception) {
+        emptyList() // unreadable (e.g. written by an incompatible version): start clean
+    }
 
     fun load(): ThrottleConfig {
-        val appsJson = prefs.getString(KEY_SELECTED_APPS, null)
-        val selectedApps: List<String> = if (appsJson != null) {
-            gson.fromJson(appsJson, listType) ?: emptyList()
-        } else emptyList()
-
         return ThrottleConfig(
-            selectedApps = selectedApps,
+            selectedApps = readList(KEY_SELECTED_APPS, listType),
+            appRules = readList(KEY_APP_RULES, rulesType),
+            blockedDomains = readList(KEY_BLOCKED_DOMAINS, listType),
             downloadSpeedKbps = prefs.getInt(KEY_DOWNLOAD_SPEED, 0),
             uploadSpeedKbps = prefs.getInt(KEY_UPLOAD_SPEED, 0),
             latencyMs = prefs.getInt(KEY_LATENCY, 0),
@@ -41,6 +46,8 @@ class CurrentConfigRepository @Inject constructor(
     fun save(config: ThrottleConfig, profileName: String) {
         prefs.edit()
             .putString(KEY_SELECTED_APPS, gson.toJson(config.selectedApps))
+            .putString(KEY_APP_RULES, gson.toJson(config.appRules))
+            .putString(KEY_BLOCKED_DOMAINS, gson.toJson(config.blockedDomains))
             .putInt(KEY_DOWNLOAD_SPEED, config.downloadSpeedKbps)
             .putInt(KEY_UPLOAD_SPEED, config.uploadSpeedKbps)
             .putInt(KEY_LATENCY, config.latencyMs)
@@ -52,6 +59,8 @@ class CurrentConfigRepository @Inject constructor(
 
     companion object {
         private const val KEY_SELECTED_APPS = "selected_apps"
+        private const val KEY_APP_RULES = "app_rules"
+        private const val KEY_BLOCKED_DOMAINS = "blocked_domains"
         private const val KEY_DOWNLOAD_SPEED = "download_speed_kbps"
         private const val KEY_UPLOAD_SPEED = "upload_speed_kbps"
         private const val KEY_LATENCY = "latency_ms"

@@ -32,4 +32,20 @@ class LatencyQueueTest {
         nowMs += 1_000
         repeat(200) { assertEquals(it.toByte(), queue.poll(0)?.single()) }
     }
+
+    @Test
+    fun `lanes are ordered independently and rate-limit delay is added`() {
+        val slow = LatencyQueue.Lane()
+        val fast = LatencyQueue.Lane()
+        queue.enqueue(byteArrayOf(1), baseMs = 300, jitterMs = 0, lane = slow)
+        queue.enqueue(byteArrayOf(2), baseMs = 0, jitterMs = 0, lane = fast) // not held behind the slow lane
+        queue.enqueue(byteArrayOf(3), baseMs = 0, jitterMs = 0, lane = fast, extraDelayMs = 100)
+
+        assertEquals(2, queue.poll(0)?.single()?.toInt())
+        assertNull(queue.poll(0))
+        nowMs = 100
+        assertEquals(3, queue.poll(0)?.single()?.toInt())
+        nowMs = 300
+        assertEquals(1, queue.poll(0)?.single()?.toInt())
+    }
 }
