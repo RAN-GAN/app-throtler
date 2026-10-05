@@ -218,7 +218,7 @@ private fun ConnectionRow(connection: ConnectionUi, onClick: () -> Unit) {
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "${connection.destination}:${connection.port}",
+                text = hostAndPort(connection.destination, connection.port),
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -243,6 +243,9 @@ private fun ConnectionRow(connection: ConnectionUi, onClick: () -> Unit) {
     }
 }
 
+/** IPv6 addresses are bracketed so the port is not mistaken for part of the address. */
+private fun hostAndPort(host: String, port: Int): String = if (':' in host) "[$host]:$port" else "$host:$port"
+
 private fun stateLabel(connection: ConnectionUi): String = when (connection.state) {
     FlowState.OPEN -> "Open"
     FlowState.CLOSED -> "Closed"
@@ -266,7 +269,7 @@ private fun ConnectionDetails(
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 DetailRow("App", connection.appLabel)
                 connection.packageName?.let { DetailRow("Package", it) }
-                DetailRow("Address", "${connection.address}:${connection.port}")
+                DetailRow("Address", hostAndPort(connection.address, connection.port))
                 DetailRow("Protocol", connection.protocol)
                 DetailRow("Status", stateLabel(connection))
                 DetailRow("Received", formatBytes(connection.bytesDown))
