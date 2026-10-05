@@ -34,3 +34,16 @@ replay_pid*
 
 # Proguard mapping if generated locally
 mapping.txt
+
+# Editor and assistant local settings
+.vscode/
+.claude/settings.local.json
+
+# Native build caches
+.cxx/
+.externalNativeBuild/
+
+# Debugging artifacts
+*.hprof
+*.pcap
+*.pcapng

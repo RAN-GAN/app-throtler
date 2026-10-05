@@ -1,5 +1,12 @@
 # App Throttler — Android Network Condition Simulator
 
+> **Two parts.** The [roadmap](#roadmap-firewall-and-traffic-inspection) at the end is the
+> current plan for features that are not built yet. Everything before it is the original design
+> plan, kept for history: the implementation has since diverged from it in places (for example
+> the TCP forwarder, the statistics path and the UI components). For how the app works today see
+> [README.md](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+> [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
 ## Overview
 
 A rootless Android app that simulates poor network conditions (2G, 3G, lossy Wi-Fi, high latency) for
@@ -484,3 +491,117 @@ Once a packet arrives at the TUN interface you cannot tell which of the allowed 
 - [ ] Loading a saved profile restores all slider values
 - [ ] VPN stops cleanly when toggled off; key icon disappears
 - [ ] Packet loss at 20% causes visible request failures in selected app
+
+---
+
+## Roadmap: firewall and traffic inspection
+
+Status: **planned, nothing implemented.** Two feature sets, modelled on what NetGuard and
+PCAPdroid do, built on the VPN tunnel the app already has:
+
+- **Firewall (NetGuard-style)** — block or allow network access per app.
+- **Traffic inspection (PCAPdroid-style)** — see which connections each app makes, and export
+  the raw traffic as a PCAP file.
+
+Both fit the same use case as throttling: a developer or tester controlling and observing the
+network of an app under test, on an unrooted device.
+
+### Foundation: knowing which app owns a connection
+
+Today a packet arriving on the TUN device carries no app identity, which is why all selected
+apps share one profile. Both new feature sets need that identity.
+
+On Android 10 (API 29) and newer, a VPN app may call
+`ConnectivityManager.getConnectionOwnerUid(protocol, local, remote)` to get the UID that owns a
+TCP or UDP flow. The plan:
+
+- Look the UID up **once per flow** — on the SYN in `TcpForwarder`, on the first datagram in
+  `UdpForwarder` — and store it on the connection/session object. Never on the per-packet path.
+- Resolve UID → package name and label through `PackageManager`, cached.
+- Introduce a `FlowRegistry` (new, in `vpn/`) that both forwarders report to: flow opened,
+  bytes up/down, flow closed, plus the owning UID. It is the single source for the connections
+  list, per-app statistics, firewall decisions and capture filtering.
+
+On Android 5–9 the lookup does not exist. There the new features are unavailable and the UI says
+so; throttling keeps working as it does now.
+
+Everything below depends on this step, so it is built first.
+
+### Firewall (NetGuard-style)
+
+| Capability | Design |
+|---|---|
+| Block an app completely | Per-app rule `BLOCK`. TCP: answer the SYN with a reset instead of connecting. UDP: drop the datagram. |
+| Block per network type | Separate rule for Wi-Fi and for mobile data, evaluated against the transport of the current underlying network. |
+| Block while the screen is off | Optional per-app flag, driven by screen on/off broadcasts. |
+| Blocked-attempt log | Each refused flow is recorded with app, destination and time, and shown in the UI. |
+| Block by domain (later) | Answer DNS queries for listed domains with NXDOMAIN inside `UdpForwarder`. Does not work for apps using DNS-over-HTTPS or Private DNS. |
+
+Design points:
+
+- **Three states per app** — *not routed* (bypasses the VPN, as today), *throttled*, *blocked*.
+  A blocked app must be routed into the tunnel, so it joins the `addAllowedApplication()` list.
+- **Rule storage** — new Room table `app_rules` (package, mode, Wi-Fi allowed, mobile allowed,
+  block when screen off). Database version goes to 2 with a migration.
+- **Rule changes while running** — rules are read from an in-memory snapshot the service
+  replaces atomically; changing the *set* of routed apps still needs a tunnel rebuild, which
+  the existing **Apply** flow already does.
+- **Not planned** — a device-wide "block everything by default" lockdown mode. It would route
+  every app through the forwarder and conflicts with the always-on VPN restriction.
+
+### Traffic inspection (PCAPdroid-style)
+
+| Capability | Design |
+|---|---|
+| Live connections list | From `FlowRegistry`: app, protocol, destination address and port, bytes up/down, start time, state (open, closed, reset, blocked). |
+| Hostnames | Learned passively: map addresses to names from DNS replies seen in `UdpForwarder`, and read the SNI from TLS ClientHello / the `Host` header from plain HTTP on the first client segment. |
+| Per-app statistics | Totals and current rate per app, replacing the single global counter pair on Home. |
+| PCAP export | Write every packet read from and written to the TUN device to a `.pcap` file (link type `LINKTYPE_RAW`, 101), openable in Wireshark. Destination chosen by the user through the system file picker. |
+| Capture filter | Optionally capture only one app's flows, using the flow's UID. |
+
+Design points:
+
+- **Capture tap** — one hook in `PacketProcessor` (upstream, before the loss filter) and one in
+  `TunWriter` (downstream). Packets are handed to a bounded queue and written by a dedicated
+  thread, so a slow disk never stalls forwarding; when the queue is full, packets are dropped
+  from the capture (and counted), not from the network.
+- **Limits** — capture is off by default, has a size cap, and stops automatically when the cap
+  is reached or the VPN stops.
+- **Memory** — the registry keeps a bounded number of closed flows (ring buffer).
+- **Not planned** — TLS decryption. Capture shows encrypted payloads as they are on the wire.
+- **Privacy** — captures and connection history stay on the device; nothing is uploaded.
+
+### UI changes
+
+- **Apps** — each app gets a mode selector (not routed / throttle / block) instead of a
+  checkbox, and its Wi-Fi/mobile toggles when blocked.
+- **Connections** (new tab, or replaces Logs with Logs moved under it) — live list with search
+  and per-app filter; tap a connection for details; start/stop capture and export from here.
+- **Home** — per-app breakdown under the totals; a count of blocked attempts.
+
+### Build order
+
+1. **Flow attribution and `FlowRegistry`** — UID lookup, registry, unit tests with fake flows.
+2. **Connections screen and per-app statistics** — read-only, lowest risk, makes step 1 visible.
+3. **Firewall rules** — `app_rules` table, block decision in both forwarders, Apps screen
+   modes, blocked-attempt log.
+4. **PCAP capture and export** — capture tap, writer thread, file picker, size cap.
+5. **Hostnames** — DNS reply parsing, SNI and HTTP Host extraction.
+6. **Domain blocking** — DNS-level rules (depends on 5).
+7. **Per-app throttle profiles** (optional) — with flow ownership known, each app could get its
+   own token buckets; this lifts the "one profile per session" limitation on Android 10+.
+
+Each step is shippable on its own and is verified on a physical device before the next starts.
+
+### Risks and open questions
+
+- **`getConnectionOwnerUid` timing** — the lookup can fail for a flow the kernel has already
+  torn down; such flows are recorded as "unknown app" and follow a configurable default
+  (allow, to stay safe).
+- **Battery and throughput** — blocked apps are routed through the tunnel. A refused flow costs
+  almost nothing, but the more apps are routed, the more traffic passes through the forwarder.
+- **Scope** — these features turn a throttling tool into a broader network toolkit. Whether the
+  app keeps a single "apps under test" list, or grows a device-wide firewall, should be decided
+  before step 3.
+- **Play Store policy** — packet capture and `QUERY_ALL_PACKAGES` both need a declared
+  justification if the app is ever published.
