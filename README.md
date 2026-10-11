@@ -245,3 +245,12 @@ adb logcat -s AppThrottler
 - [Development](docs/DEVELOPMENT.md) — project layout, tests and on-device verification.
 - [PLAN.md](PLAN.md) — the original design plan and the firewall/inspection roadmap, kept for
   history.
+
+## Contributing
+
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report security
+problems as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Licensed under the [GNU General Public License v3.0](LICENSE).
