@@ -1,0 +1,2789 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>App Throttler — A slow network, on purpose</title>
+  <meta name="description"
+    content="Slow, block and inspect the network of the Android apps you choose. No root. No server. Open source.">
+  <meta name="theme-color" content="#fbfaf8">
+  <meta name="color-scheme" content="light">
+  <meta property="og:title" content="App Throttler — A slow network, on purpose">
+  <meta property="og:description"
+    content="Slow, block and inspect the network of the Android apps you choose. No root. No server. Open source.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ran-gan.github.io/app-throtler/">
+  <meta property="og:image" content="assets/app-home.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="App Throttler — A slow network, on purpose">
+  <meta name="twitter:description"
+    content="Slow, block and inspect the network of the Android apps you choose. No root. No server. Open source.">
+  <meta name="twitter:image" content="assets/app-home.jpg">
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 108 108'%3E%3Crect width='108' height='108' rx='24' fill='%2300696D'/%3E%3Cpath d='M26 70a28 28 0 1 1 56 0' fill='none' stroke='white' stroke-width='8' stroke-linecap='round'/%3E%3Cpath d='M54 70 42 52' stroke='white' stroke-width='8' stroke-linecap='round'/%3E%3Ccircle cx='54' cy='70' r='6' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400..700;1,400..600&family=Geist+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <script>document.documentElement.classList.add('js');</script>
+  <style>
+    :root {
+      --paper: #fbfaf8;
+      --paper-2: #f3f2ef;
+      --card: #ffffff;
+      --ink: #15181a;
+      --ink-2: #5b6166;
+      --ink-3: #6b7176;
+      --hair: rgba(21, 24, 26, .10);
+      --hair-strong: rgba(21, 24, 26, .18);
+      --teal: #00696d;
+      --teal-deep: #005255;
+      --teal-tint: #e7f0ef;
+      --dark: #0c1112;
+      --dark-2: #111719;
+      --dark-ink: #f2f4f3;
+      --dark-muted: #a3adac;
+      --sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+      --ease: cubic-bezier(.2, .7, .2, 1);
+      --wrap: 1180px;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+      scroll-behavior: smooth;
+      overflow-x: clip;
+      max-width: 100%;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        animation-duration: .001ms !important;
+        animation-delay: 0ms !important;
+        transition-duration: .001ms !important;
+      }
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: clip;
+      max-width: 100%;
+    }
+
+    ::selection {
+      background: var(--teal);
+      color: #fff;
+    }
+
+    h1,
+    h2,
+    h3,
+    p,
+    ul,
+    dl,
+    dd,
+    figure {
+      margin: 0;
+    }
+
+    ul {
+      padding: 0;
+      list-style: none;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    svg {
+      display: block;
+    }
+
+    img {
+      max-width: 100%;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--teal);
+      outline-offset: 3px;
+      border-radius: 4px;
+    }
+
+    .wrap {
+      width: min(var(--wrap), calc(100% - 48px));
+      margin-inline: auto;
+    }
+
+    .skip {
+      position: absolute;
+      left: 16px;
+      top: -100px;
+      z-index: 100;
+      background: var(--ink);
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 999px;
+      font-size: 14px;
+      transition: top .2s var(--ease);
+    }
+
+    .skip:focus {
+      top: 12px;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* ————— Navigation ————— */
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(251, 250, 248, .82);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 1px solid transparent;
+      transition: border-color .3s var(--ease);
+    }
+
+    .nav.is-scrolled {
+      border-bottom-color: var(--hair);
+    }
+
+    .nav-inner {
+      height: 60px;
+      display: flex;
+      align-items: center;
+      gap: 32px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -.015em;
+      flex: none;
+    }
+
+    .brand svg {
+      width: 24px;
+      height: 24px;
+      color: var(--teal);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      margin-inline: auto;
+    }
+
+    .nav-links a {
+      font-size: 13.5px;
+      color: var(--ink-2);
+      transition: color .2s var(--ease);
+    }
+
+    .nav-links a:hover {
+      color: var(--ink);
+    }
+
+    /* ————— Buttons ————— */
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 13px 24px;
+      font-family: var(--sans);
+      font-size: 15px;
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: -.005em;
+      cursor: pointer;
+      transition: transform .2s var(--ease), background-color .2s var(--ease),
+        border-color .2s var(--ease), box-shadow .2s var(--ease);
+    }
+
+    .btn svg {
+      width: 15px;
+      height: 15px;
+      flex: none;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary {
+      background: var(--teal);
+      color: #fff;
+      box-shadow: 0 1px 2px rgba(0, 60, 62, .16);
+    }
+
+    .btn-primary:hover {
+      background: var(--teal-deep);
+      box-shadow: 0 8px 22px -8px rgba(0, 105, 109, .55);
+    }
+
+    .btn-ghost {
+      border-color: var(--hair-strong);
+      color: var(--ink);
+      background: transparent;
+    }
+
+    .btn-ghost:hover {
+      border-color: var(--ink);
+      background: rgba(21, 24, 26, .03);
+    }
+
+    .btn-sm {
+      padding: 9px 17px;
+      font-size: 13.5px;
+    }
+
+    .link-arrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--ink);
+      padding: 13px 4px;
+    }
+
+    .link-arrow svg {
+      width: 14px;
+      height: 14px;
+      transition: transform .2s var(--ease);
+    }
+
+    .link-arrow:hover svg {
+      transform: translateY(2px);
+    }
+
+    /* ————— Shared type ————— */
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: .10em;
+      text-transform: uppercase;
+      color: var(--ink-2);
+    }
+
+    .eyebrow .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--teal);
+      flex: none;
+    }
+
+    .h2 {
+      font-size: clamp(2rem, 3.8vw, 3.15rem);
+      font-weight: 600;
+      line-height: 1.04;
+      letter-spacing: -.042em;
+      text-wrap: balance;
+    }
+
+    .lede {
+      font-size: clamp(1.02rem, 1.35vw, 1.17rem);
+      line-height: 1.55;
+      color: var(--ink-2);
+      text-wrap: pretty;
+    }
+
+    .section {
+      padding: clamp(68px, 9vw, 108px) 0;
+    }
+
+    section[id],
+    .presets {
+      scroll-margin-top: 80px;
+    }
+
+    .section-head {
+      max-width: 660px;
+    }
+
+    .section-head .eyebrow {
+      margin-bottom: 20px;
+    }
+
+    .section-head .lede {
+      margin-top: 20px;
+      max-width: 560px;
+    }
+
+    .split-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 48px;
+    }
+
+    .split-head .h2 {
+      max-width: 540px;
+    }
+
+    .split-head .aside {
+      max-width: 340px;
+      font-size: 14.5px;
+      line-height: 1.6;
+      color: var(--ink-2);
+      padding-bottom: 4px;
+    }
+
+    @media (max-width: 900px) {
+      .split-head {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 20px;
+      }
+
+      .split-head .aside {
+        max-width: 560px;
+      }
+    }
+
+    /* ————— Hero ————— */
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(56px, 8vw, 104px) 0 clamp(72px, 9vw, 120px);
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(58% 62% at 82% 14%, rgba(0, 105, 109, .085), transparent 68%),
+        radial-gradient(40% 50% at 8% 92%, rgba(0, 105, 109, .035), transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1.02fr .98fr;
+      align-items: center;
+      gap: clamp(32px, 5vw, 72px);
+    }
+
+    .hero-grid>*,
+    .inspect-grid>*,
+    .automate-grid>*,
+    .gallery-container>* {
+      min-width: 0;
+    }
+
+    .hero-copy {
+      max-width: 620px;
+    }
+
+    .hero h1 {
+      margin: 22px 0 26px;
+      font-size: clamp(3rem, 6.1vw, 5.05rem);
+      font-weight: 600;
+      line-height: .94;
+      letter-spacing: -.052em;
+      text-wrap: balance;
+    }
+
+    .hero h1 .accent {
+      color: var(--teal);
+    }
+
+    .hero .lede {
+      max-width: 33rem;
+      font-size: clamp(1.06rem, 1.5vw, 1.22rem);
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+      margin-top: 34px;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 20px;
+      margin-top: 22px;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: .055em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    .hero-visual {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 600px;
+    }
+
+    .hero-gauge {
+      position: absolute;
+      width: clamp(380px, 46vw, 560px);
+      height: auto;
+      color: var(--teal);
+      opacity: .085;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -54%);
+      pointer-events: none;
+    }
+
+    /* ————— App screenshots ————— */
+
+    .phone {
+      position: relative;
+      z-index: 1;
+      width: min(326px, 100%);
+      background: #0d1213;
+      border-radius: 46px;
+      padding: 9px;
+      box-shadow:
+        0 50px 90px -36px rgba(12, 20, 21, .55),
+        0 14px 32px -18px rgba(12, 20, 21, .3),
+        inset 0 0 0 1px rgba(255, 255, 255, .10);
+    }
+
+    .screen {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 738 / 1600;
+      border-radius: 37px;
+      overflow: hidden;
+      background: #1E1F22;
+    }
+
+    .phone-shot {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* ————— Features ————— */
+
+    .features {
+      border-top: 1px solid var(--hair);
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      margin-top: clamp(44px, 6vw, 68px);
+    }
+
+    .feature {
+      padding: 4px 34px 4px 0;
+      border-left: 1px solid var(--hair);
+      padding-left: 34px;
+    }
+
+    .feature:first-child {
+      border-left: 0;
+      padding-left: 0;
+    }
+
+    .feature svg {
+      width: 27px;
+      height: 27px;
+      color: var(--teal);
+      margin-bottom: 20px;
+    }
+
+    .feature h3 {
+      font-size: 16.5px;
+      font-weight: 600;
+      letter-spacing: -.02em;
+    }
+
+    .feature p {
+      margin-top: 9px;
+      font-size: 14.5px;
+      line-height: 1.62;
+      color: var(--ink-2);
+      text-wrap: pretty;
+    }
+
+    /* ————— Inspect ————— */
+
+    .inspect-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.02fr;
+      align-items: center;
+      gap: clamp(44px, 6vw, 84px);
+    }
+
+    .check-list {
+      margin-top: 30px;
+      display: grid;
+      gap: 13px;
+    }
+
+    .check-list li {
+      position: relative;
+      padding-left: 22px;
+      font-size: 14.5px;
+      line-height: 1.5;
+      color: var(--ink-2);
+    }
+
+    .check-list li::before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      top: .52em;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--teal);
+    }
+
+    .check-list code {
+      font-family: var(--mono);
+      font-size: .92em;
+      color: var(--ink);
+    }
+
+    /* Traffic screen screenshot */
+
+    .traffic-shot {
+      justify-self: end;
+      width: 100%;
+      max-width: 360px;
+      border-radius: 20px;
+      overflow: hidden;
+      background: #1E1F22;
+      border: 1px solid rgba(21, 24, 26, .12);
+      box-shadow: 0 34px 70px -46px rgba(16, 24, 25, .45);
+    }
+
+    .traffic-shot img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* ————— Screens Interactive Showcase ————— */
+
+    .screens-section {
+      padding: clamp(68px, 9vw, 108px) 0;
+      border-top: 1px solid var(--hair);
+    }
+
+    .gallery-container {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: clamp(32px, 5vw, 64px);
+      align-items: center;
+      margin-top: clamp(40px, 5vw, 60px);
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+    }
+
+    .gallery-tabs {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+    }
+
+    .title-short {
+      display: none;
+    }
+
+    .title-full {
+      display: inline;
+    }
+
+    .gallery-tab {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      padding: 14px 18px;
+      border-radius: 14px;
+      border: 1px solid transparent;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      font-family: var(--sans);
+      transition: background-color .2s var(--ease), border-color .2s var(--ease), box-shadow .2s var(--ease), transform .2s var(--ease);
+      width: 100%;
+      color: inherit;
+    }
+
+    .gallery-tab:hover {
+      background: rgba(21, 24, 26, .03);
+    }
+
+    .gallery-tab.is-active {
+      background: var(--card);
+      border-color: var(--hair-strong);
+      box-shadow: 0 8px 24px -10px rgba(21, 24, 26, .10);
+    }
+
+    .tab-index {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--ink-3);
+      margin-top: 2px;
+      letter-spacing: .06em;
+      flex: none;
+      transition: color .2s var(--ease);
+    }
+
+    .gallery-tab.is-active .tab-index {
+      color: var(--teal);
+      font-weight: 600;
+    }
+
+    .tab-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .tab-title {
+      display: block;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -.015em;
+      color: var(--ink);
+      line-height: 1.35;
+      transition: color .2s var(--ease);
+    }
+
+    .gallery-tab.is-active .tab-title {
+      color: var(--teal-deep);
+    }
+
+    .tab-desc {
+      display: block;
+      margin-top: 3px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--ink-2);
+    }
+
+    .tab-indicator {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--teal);
+      margin-top: 8px;
+      opacity: 0;
+      flex: none;
+      transition: opacity .2s var(--ease), transform .2s var(--ease);
+      transform: scale(0.6);
+    }
+
+    .gallery-tab.is-active .tab-indicator {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .gallery-stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .gallery-phone-wrap {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      width: 100%;
+    }
+
+    .gallery-phone {
+      width: min(312px, 100%);
+      background: #0d1213;
+      border-radius: 46px;
+      padding: 9px;
+      box-shadow:
+        0 42px 84px -38px rgba(12, 20, 21, .55),
+        0 14px 30px -16px rgba(12, 20, 21, .28),
+        inset 0 0 0 1px rgba(255, 255, 255, .10);
+      cursor: pointer;
+      position: relative;
+      transition: transform .25s var(--ease), box-shadow .25s var(--ease);
+    }
+
+    .gallery-phone:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        0 50px 92px -36px rgba(0, 105, 109, .35),
+        0 16px 32px -16px rgba(12, 20, 21, .32),
+        inset 0 0 0 1px rgba(255, 255, 255, .16);
+    }
+
+    .gallery-screen {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 738 / 1600;
+      border-radius: 37px;
+      overflow: hidden;
+      background: #1E1F22;
+    }
+
+    .gallery-shot {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transform: scale(.985);
+      transition: opacity .32s var(--ease), transform .32s var(--ease);
+      pointer-events: none;
+    }
+
+    .gallery-shot.is-active {
+      opacity: 1;
+      transform: scale(1);
+      pointer-events: auto;
+      z-index: 2;
+    }
+
+    .gallery-zoom-hint {
+      position: absolute;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%) translateY(6px);
+      background: rgba(13, 18, 19, .84);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      color: #fff;
+      padding: 6px 13px;
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(255, 255, 255, .18);
+      opacity: 0;
+      transition: opacity .2s var(--ease), transform .2s var(--ease);
+      pointer-events: none;
+      z-index: 5;
+      white-space: nowrap;
+    }
+
+    .gallery-zoom-hint svg {
+      width: 13px;
+      height: 13px;
+    }
+
+    .gallery-phone:hover .gallery-zoom-hint {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .gallery-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 22px;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    .gallery-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 1px solid var(--hair-strong);
+      background: var(--card);
+      color: var(--ink);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: all .2s var(--ease);
+      flex: none;
+    }
+
+    .gallery-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .gallery-btn:hover {
+      background: var(--ink);
+      color: #fff;
+      border-color: var(--ink);
+      transform: scale(1.05);
+    }
+
+    .gallery-btn:active {
+      transform: scale(0.95);
+    }
+
+    .gallery-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 18px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--hair);
+      box-shadow: 0 2px 8px -4px rgba(21, 24, 26, .06);
+      max-width: min(260px, calc(100% - 92px));
+      min-width: 0;
+    }
+
+    .gallery-pill-num {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--teal);
+      font-weight: 500;
+      flex: none;
+    }
+
+    .gallery-pill-title {
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ————— Lightbox Modal ————— */
+    .gallery-modal {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      max-width: 100vw;
+      max-height: 100vh;
+      overflow: hidden;
+    }
+
+    .gallery-modal::backdrop {
+      background: rgba(12, 17, 18, .86);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    .modal-box {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px;
+      outline: none;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: #15181a;
+      border: 1px solid rgba(255, 255, 255, .2);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: transform .2s var(--ease), background .2s var(--ease);
+      z-index: 10;
+    }
+
+    .modal-close:hover {
+      transform: scale(1.08);
+      background: #000;
+    }
+
+    .modal-close svg {
+      width: 17px;
+      height: 17px;
+    }
+
+    #modal-img {
+      max-height: min(82vh, 880px);
+      width: auto;
+      border-radius: 28px;
+      box-shadow: 0 40px 90px -20px rgba(0, 0, 0, .8), inset 0 0 0 1px rgba(255, 255, 255, .15);
+      background: #1E1F22;
+    }
+
+    .modal-caption {
+      margin-top: 14px;
+      font-family: var(--sans);
+      font-size: 14px;
+      color: #dfe7e6;
+      text-align: center;
+    }
+
+    /* ————— Controls ————— */
+
+    .controls-section {
+      background: var(--paper-2);
+    }
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      margin-top: clamp(40px, 5vw, 58px);
+      border-top: 1px solid var(--hair-strong);
+    }
+
+    .control {
+      padding: 22px 20px 0 0;
+      border-left: 1px solid var(--hair);
+      padding-left: 20px;
+    }
+
+    .control:first-child {
+      border-left: 0;
+      padding-left: 0;
+    }
+
+    .control .micro-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ink-2);
+    }
+
+    .control .micro-label::before {
+      content: "";
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--teal);
+      flex: none;
+    }
+
+    .control b {
+      display: block;
+      margin-top: 9px;
+      font-family: var(--mono);
+      font-size: 13.5px;
+      font-weight: 500;
+      letter-spacing: -.015em;
+      line-height: 1.4;
+    }
+
+    .control p {
+      margin-top: 7px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--ink-2);
+    }
+
+    .presets {
+      margin-top: clamp(56px, 7vw, 80px);
+    }
+
+    .presets-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 14px;
+    }
+
+    .presets-head h3 {
+      font-size: 19px;
+      font-weight: 600;
+      letter-spacing: -.025em;
+    }
+
+    .presets-head p {
+      font-size: 13.5px;
+      color: var(--ink-2);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    table.presets-table {
+      width: 100%;
+      min-width: 640px;
+      border-collapse: collapse;
+    }
+
+    .presets-table th {
+      padding: 10px 12px;
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 500;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      text-align: right;
+      border-bottom: 1px solid var(--hair-strong);
+      white-space: nowrap;
+    }
+
+    .presets-table th:first-child,
+    .presets-table td:first-child {
+      text-align: left;
+      padding-left: 0;
+    }
+
+    .presets-table td {
+      padding: 13px 12px;
+      border-bottom: 1px solid var(--hair);
+      text-align: right;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--ink-2);
+      white-space: nowrap;
+    }
+
+    .presets-table td:first-child {
+      font-family: var(--sans);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--ink);
+      letter-spacing: -.01em;
+    }
+
+    .presets-table tbody tr {
+      transition: background-color .18s var(--ease);
+    }
+
+    .presets-table tbody tr:hover {
+      background: rgba(21, 24, 26, .025);
+    }
+
+    .presets-table .offline td:first-child {
+      color: var(--teal);
+    }
+
+    /* ————— Automate ————— */
+
+    .automate {
+      background: var(--dark);
+      color: var(--dark-ink);
+      padding: clamp(72px, 9vw, 112px) 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .automate::before {
+      content: "";
+      position: absolute;
+      width: 760px;
+      height: 760px;
+      left: -300px;
+      bottom: -560px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(0, 136, 141, .22), transparent 66%);
+      pointer-events: none;
+    }
+
+    .automate .eyebrow {
+      color: #8dcbc7;
+    }
+
+    .automate .eyebrow .dot {
+      background: #8dcbc7;
+    }
+
+    .automate .h2 {
+      color: var(--dark-ink);
+    }
+
+    .automate .lede {
+      color: var(--dark-muted);
+    }
+
+    .automate-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 1.05fr;
+      align-items: center;
+      gap: clamp(44px, 6vw, 80px);
+    }
+
+    .auto-list {
+      margin-top: 28px;
+      border-top: 1px solid rgba(255, 255, 255, .12);
+    }
+
+    .auto-list li {
+      display: flex;
+      gap: 14px;
+      padding: 13px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, .09);
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--dark-muted);
+    }
+
+    .auto-list b {
+      flex: none;
+      width: 108px;
+      color: var(--dark-ink);
+      font-weight: 500;
+    }
+
+    .terminal {
+      background: var(--dark-2);
+      border: 1px solid rgba(255, 255, 255, .10);
+      border-radius: 18px;
+      overflow: hidden;
+      box-shadow: 0 40px 80px -40px rgba(0, 0, 0, .8);
+    }
+
+    .term-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 11px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, .08);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: #7f8b8a;
+    }
+
+    .copy {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: #b9c3c2;
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, .16);
+      border-radius: 999px;
+      padding: 5px 10px;
+      cursor: pointer;
+      transition: background-color .2s var(--ease), color .2s var(--ease), border-color .2s var(--ease);
+    }
+
+    .copy:hover {
+      background: rgba(255, 255, 255, .07);
+      color: #fff;
+      border-color: rgba(255, 255, 255, .28);
+    }
+
+    .term-code {
+      margin: 0;
+      padding: 18px 16px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.95;
+      color: #dfe7e6;
+      overflow-x: auto;
+      max-width: 100%;
+      tab-size: 2;
+    }
+
+    .prompt {
+      color: #8dcbc7;
+      user-select: none;
+    }
+
+    .term-flag {
+      color: #8dcbc7;
+    }
+
+    .term-foot {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 12px 16px;
+      border-top: 1px solid rgba(255, 255, 255, .08);
+    }
+
+    .term-foot span {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .05em;
+      color: #8b9695;
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 999px;
+      padding: 4px 8px;
+    }
+
+    .term-note {
+      margin-top: 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #7f8b8a;
+    }
+
+    /* ————— Privacy ————— */
+
+    .statement-section {
+      padding: clamp(80px, 11vw, 128px) 0;
+    }
+
+    .statement {
+      max-width: 820px;
+      margin-inline: auto;
+      text-align: center;
+    }
+
+    .statement .eyebrow {
+      margin-bottom: 22px;
+    }
+
+    .statement .h2 {
+      font-size: clamp(2.2rem, 4.6vw, 3.8rem);
+      line-height: 1.02;
+    }
+
+    .statement .lede {
+      margin: 24px auto 0;
+      max-width: 600px;
+    }
+
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      margin-top: clamp(48px, 6vw, 68px);
+      border-top: 1px solid var(--hair-strong);
+      text-align: left;
+    }
+
+    .fact {
+      padding: 22px 28px 0 0;
+      border-left: 1px solid var(--hair);
+      padding-left: 28px;
+    }
+
+    .fact:first-child {
+      border-left: 0;
+      padding-left: 0;
+    }
+
+    .fact .micro-label {
+      color: var(--ink-3);
+    }
+
+    .fact p {
+      margin-top: 8px;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--ink-2);
+    }
+
+    /* ————— Download ————— */
+
+    .download-section {
+      padding: 0 0 clamp(72px, 9vw, 104px);
+    }
+
+    .download-card {
+      background: var(--card);
+      border: 1px solid var(--hair);
+      border-radius: 28px;
+      padding: clamp(22px, 4.4vw, 48px);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: clamp(24px, 4vw, 36px);
+      box-shadow: 0 40px 80px -60px rgba(16, 24, 25, .4);
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    .download-card>* {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .download-main {
+      display: flex;
+      align-items: flex-start;
+      gap: 20px;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .app-icon {
+      width: 60px;
+      height: 60px;
+      border-radius: 15px;
+      background: var(--teal);
+      display: grid;
+      place-items: center;
+      flex: none;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 8px 20px -10px rgba(0, 105, 109, .6);
+    }
+
+    .app-icon svg {
+      width: 38px;
+      height: 38px;
+      color: #fff;
+    }
+
+    .download-copy {
+      min-width: 0;
+      max-width: 100%;
+      flex: 1;
+    }
+
+    .download-copy h2 {
+      font-size: clamp(1.6rem, 2.6vw, 2.1rem);
+      font-weight: 600;
+      letter-spacing: -.035em;
+      line-height: 1.1;
+    }
+
+    .download-copy p {
+      margin-top: 9px;
+      max-width: 480px;
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--ink-2);
+    }
+
+    .download-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .checksum-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      padding: 7px 12px;
+      background: var(--paper-2);
+      border: 1px solid var(--hair);
+      border-radius: 10px;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    .checksum-tag {
+      font-family: var(--mono);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--teal);
+      flex: none;
+    }
+
+    .checksum-hash {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ink-2);
+      word-break: break-all;
+      overflow-wrap: anywhere;
+      flex: 1;
+      min-width: 0;
+      line-height: 1.4;
+    }
+
+    .checksum-copy {
+      flex: none;
+      padding: 3px 9px;
+      font-size: 9px;
+      letter-spacing: .05em;
+    }
+
+    .build {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin-top: 22px;
+      padding: 16px 20px;
+      border: 1px solid var(--hair);
+      border-radius: 16px;
+      background: var(--paper);
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    .build>* {
+      min-width: 0;
+    }
+
+    .build-label {
+      flex: none;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+      width: 108px;
+      line-height: 1.5;
+    }
+
+    .build pre {
+      flex: 1;
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 11.5px;
+      line-height: 1.85;
+      color: var(--ink-2);
+      overflow-x: auto;
+      max-width: 100%;
+      min-width: 0;
+    }
+
+    .build .copy {
+      flex: none;
+      color: var(--ink-2);
+      border-color: var(--hair-strong);
+    }
+
+    .build .copy:hover {
+      background: rgba(21, 24, 26, .04);
+      color: var(--ink);
+      border-color: var(--ink);
+    }
+
+    /* ————— Footer ————— */
+
+    .footer {
+      border-top: 1px solid var(--hair);
+      padding: 36px 0 44px;
+    }
+
+    .footer-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 24px;
+    }
+
+    .footer-links a {
+      font-size: 13px;
+      color: var(--ink-2);
+      transition: color .2s var(--ease);
+    }
+
+    .footer-links a:hover {
+      color: var(--ink);
+    }
+
+    .footer-bottom {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 26px;
+      font-family: var(--mono);
+      font-size: 9.5px;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    /* ————— Reveal ————— */
+
+    .js [data-reveal] {
+      opacity: 0;
+      transform: translateY(18px);
+      transition: opacity .75s var(--ease), transform .75s var(--ease);
+      transition-delay: var(--d, 0ms);
+    }
+
+    .js [data-reveal].is-visible {
+      opacity: 1;
+      transform: none;
+    }
+
+    .hero-copy>* {
+      animation: rise .8s var(--ease) both;
+    }
+
+    .hero-copy>*:nth-child(2) {
+      animation-delay: .06s;
+    }
+
+    .hero-copy>*:nth-child(3) {
+      animation-delay: .12s;
+    }
+
+    .hero-copy>*:nth-child(4) {
+      animation-delay: .18s;
+    }
+
+    .hero-copy>*:nth-child(5) {
+      animation-delay: .24s;
+    }
+
+    .hero-visual {
+      animation: rise .9s var(--ease) .16s both;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(16px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* ————— Responsive ————— */
+
+    @media (max-width: 1199px) {
+      .hero-visual {
+        min-height: 0;
+      }
+    }
+
+    @media (max-width: 1000px) {
+      .hero-grid {
+        grid-template-columns: 1fr;
+        gap: 48px;
+      }
+
+      .hero-copy {
+        max-width: 680px;
+      }
+
+      .hero-visual {
+        min-height: 0;
+        padding-top: 6px;
+      }
+
+      .hero-gauge {
+        width: min(560px, 92vw);
+      }
+
+      .feature-grid {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      .feature {
+        border-left: 0;
+        padding: 26px 0;
+        border-top: 1px solid var(--hair);
+      }
+
+      .feature:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .feature:last-child {
+        padding-bottom: 0;
+      }
+
+      .feature svg {
+        margin-bottom: 14px;
+      }
+
+      .gallery-container {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 24px;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+      }
+
+      .gallery-tabs {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        padding: 6px 2px 14px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        gap: 8px;
+        box-sizing: border-box;
+        scroll-snap-type: x mandatory;
+      }
+
+      .gallery-tabs::-webkit-scrollbar {
+        display: none;
+      }
+
+      .gallery-tab {
+        flex: 0 0 auto;
+        width: auto;
+        white-space: nowrap;
+        scroll-snap-align: start;
+        padding: 9px 15px;
+        border-radius: 999px;
+        border: 1px solid var(--hair-strong);
+        background: var(--card);
+        align-items: center;
+        gap: 7px;
+      }
+
+      .gallery-tab.is-active {
+        background: var(--ink);
+        border-color: var(--ink);
+        box-shadow: 0 4px 14px -4px rgba(21, 24, 26, .35);
+      }
+
+      .gallery-tab.is-active .tab-index,
+      .gallery-tab.is-active .tab-title {
+        color: #fff;
+      }
+
+      .gallery-tab .tab-desc,
+      .gallery-tab .tab-indicator {
+        display: none;
+      }
+
+      .gallery-tab .tab-index {
+        margin-top: 0;
+        font-size: 11px;
+      }
+
+      .title-full {
+        display: none;
+      }
+
+      .title-short {
+        display: inline;
+        font-size: 13px;
+        font-weight: 500;
+      }
+
+      .gallery-phone-wrap {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .gallery-phone {
+        width: min(290px, calc(100vw - 48px));
+        max-width: 100%;
+      }
+
+      .inspect-grid {
+        grid-template-columns: 1fr;
+        gap: 40px;
+      }
+
+      .traffic-shot {
+        justify-self: start;
+      }
+
+      .automate-grid {
+        grid-template-columns: 1fr;
+        gap: 40px;
+      }
+
+      .control-grid {
+        grid-template-columns: repeat(3, 1fr);
+        row-gap: 26px;
+      }
+
+      .control:nth-child(4) {
+        border-left: 0;
+        padding-left: 0;
+      }
+
+      .control:nth-child(4),
+      .control:nth-child(5) {
+        border-top: 1px solid var(--hair);
+        padding-top: 22px;
+      }
+
+      .control:nth-child(5) {
+        border-left: 1px solid var(--hair);
+        padding-left: 20px;
+      }
+
+      .download-card {
+        grid-template-columns: 1fr;
+        gap: 24px;
+        padding: clamp(22px, 4vw, 36px);
+      }
+
+      .download-actions {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 10px;
+        width: 100%;
+      }
+
+      .download-actions .btn {
+        flex: 1 1 180px;
+        justify-content: center;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .nav-links {
+        display: none;
+      }
+
+      .nav-inner {
+        justify-content: space-between;
+      }
+
+      .build {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px 14px;
+        padding: 14px 18px;
+      }
+
+      .build-label {
+        grid-column: 1 / -1;
+        width: auto;
+      }
+
+      .build pre {
+        grid-column: 1;
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .build .copy {
+        grid-column: 2;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .wrap {
+        width: calc(100% - 36px);
+      }
+
+      .facts {
+        grid-template-columns: 1fr;
+      }
+
+      .fact {
+        border-left: 0;
+        padding: 20px 0;
+        border-top: 1px solid var(--hair);
+      }
+
+      .fact:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .fact:last-child {
+        padding-bottom: 0;
+      }
+
+      .presets-head {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+      }
+
+      .download-main {
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .download-actions {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .download-actions .btn {
+        width: 100%;
+        flex: none;
+      }
+    }
+
+    @media (max-width: 540px) {
+      .download-card {
+        border-radius: 20px;
+        padding: 20px 16px;
+      }
+
+      .download-main {
+        gap: 12px;
+      }
+
+      .app-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+      }
+
+      .app-icon svg {
+        width: 28px;
+        height: 28px;
+      }
+
+      .download-copy h2 {
+        font-size: 1.55rem;
+      }
+
+      .checksum-bar {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 8px 10px;
+      }
+
+      .checksum-copy {
+        align-self: flex-end;
+      }
+
+      .build {
+        grid-template-columns: 1fr;
+        gap: 10px;
+        padding: 14px 12px;
+      }
+
+      .build pre {
+        grid-column: 1;
+        font-size: 11px;
+      }
+
+      .build .copy {
+        grid-column: 1;
+        justify-self: flex-start;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .hero {
+        padding-top: 40px;
+      }
+
+      .hero-actions {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .hero-actions .btn {
+        width: 100%;
+      }
+
+      .hero-actions .link-arrow {
+        justify-content: center;
+      }
+
+      .control-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .control:nth-child(3) {
+        border-left: 0;
+        padding-left: 0;
+        border-top: 1px solid var(--hair);
+        padding-top: 22px;
+      }
+
+      .control:nth-child(4) {
+        border-left: 1px solid var(--hair);
+        padding-left: 20px;
+      }
+
+      .control:nth-child(5) {
+        border-left: 0;
+        padding-left: 0;
+        grid-column: 1 / -1;
+      }
+
+      .control:nth-child(n+3) {
+        border-top: 1px solid var(--hair);
+        padding-top: 22px;
+      }
+
+      .auto-list b {
+        width: 92px;
+      }
+
+      .footer-top {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .footer-bottom {
+        flex-direction: column;
+        gap: 4px;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .control-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .control {
+        border-left: 0 !important;
+        padding-left: 0 !important;
+        padding-top: 18px;
+      }
+
+      .control:nth-child(2) {
+        border-top: 1px solid var(--hair);
+      }
+
+      .control:first-child {
+        padding-top: 0;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .js [data-reveal] {
+        opacity: 1;
+        transform: none;
+      }
+
+      .hero-copy>*,
+      .hero-visual {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" id="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#top" aria-label="App Throttler, back to top">
+        <svg viewBox="0 0 108 108" fill="none" aria-hidden="true">
+          <path d="M30 70a24 24 0 1 1 48 0" stroke="currentColor" stroke-width="7" stroke-linecap="round" />
+          <path d="M54 70 42 50" stroke="currentColor" stroke-width="7" stroke-linecap="round" />
+          <circle cx="54" cy="70" r="5.5" fill="currentColor" />
+        </svg>
+        <span>App Throttler</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#inspect">Inspect</a>
+        <a href="#screens">Screens</a>
+        <a href="#controls">Controls</a>
+        <a href="#presets">Presets</a>
+        <a href="#automate">Automation</a>
+      </nav>
+      <a class="btn btn-primary btn-sm" href="#download">Download</a>
+    </div>
+  </header>
+
+  <main id="main">
+
+    <!-- Hero -->
+    <section class="hero" id="top">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="dot"></span>Open source · Android 5.0 and newer</p>
+          <h1>A slow network,<br><span class="accent">on purpose.</span></h1>
+          <p class="lede">App Throttler slows, blocks and inspects the traffic of the Android apps you choose. No root,
+            no server, and nothing else on the phone is touched.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#download">
+              Download APK
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 2v8m0 0 3.2-3.2M8 10 4.8 6.8M3 12.5v1h10v-1" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </a>
+            <a class="link-arrow" href="#features">
+              See what it does
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 3v10m0 0 4-4m-4 4-4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+            </a>
+          </div>
+          <p class="hero-meta"><span>GPL-3.0</span><span>v0.1.0</span></p>
+        </div>
+
+        <div class="hero-visual">
+          <svg class="hero-gauge" viewBox="0 0 108 108" fill="none" aria-hidden="true">
+            <path d="M18 70a36 36 0 1 1 72 0" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+            <path d="M54 70 36 42" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+            <circle cx="54" cy="70" r="3.4" fill="currentColor" />
+          </svg>
+
+          <div class="phone">
+            <div class="screen">
+              <img class="phone-shot" src="assets/app-home.jpg" width="738" height="1600" fetchpriority="high"
+                alt="The App Throttler Home screen with the VPN stopped. The profile is Custom: 86 kbps download, 66 kbps upload, 100 ms latency plus 20 ms jitter and 1.0% packet loss. The status line reads Stopped and the bottom navigation shows Home selected.">
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section features" id="features">
+      <div class="wrap">
+        <div class="section-head" data-reveal>
+          <h2 class="h2">Make any network misbehave.</h2>
+          <p class="lede">Five controls, per-app rules and a live view of every connection — in one small app that stays
+            out of the way of everything else.</p>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature" data-reveal style="--d:0ms">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1.8" />
+              <rect x="14" y="3" width="7" height="7" rx="1.8" />
+              <rect x="3" y="14" width="7" height="7" rx="1.8" />
+              <rect x="14" y="14" width="7" height="7" rx="1.8" fill="currentColor" stroke="none" />
+            </svg>
+            <h3>Only the apps you pick</h3>
+            <p>Everything else keeps its normal connection. Tick the apps under test and leave the rest of the phone
+              alone.</p>
+          </article>
+
+          <article class="feature" data-reveal style="--d:80ms">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <path d="M3 6h18M3 12h18M3 18h18" stroke-linecap="round" />
+              <circle cx="8" cy="6" r="2.2" fill="currentColor" stroke="none" />
+              <circle cx="15.5" cy="12" r="2.2" fill="currentColor" stroke="none" />
+              <circle cx="10" cy="18" r="2.2" fill="currentColor" stroke="none" />
+            </svg>
+            <h3>Five real controls</h3>
+            <p>Download, upload, latency, jitter and packet loss. Set them by slider or load a preset — and change them
+              while the tunnel is running.</p>
+          </article>
+
+          <article class="feature" data-reveal style="--d:160ms">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <circle cx="5" cy="12" r="2.2" />
+              <circle cx="19" cy="5.5" r="2.2" />
+              <circle cx="19" cy="18.5" r="2.2" />
+              <path d="m7 11 9.8-4.6M7 13l9.8 4.6" stroke-linecap="round" />
+            </svg>
+            <h3>Watch the wire</h3>
+            <p>A live rate chart, every open connection with its host and bytes, a packet capture and a log for when
+              something won't connect.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Inspect -->
+    <section class="section" id="inspect" style="padding-top:0">
+      <div class="wrap inspect-grid">
+        <div data-reveal>
+          <h2 class="h2" style="margin-top:20px">Every connection, in plain sight.</h2>
+          <p class="lede" style="margin-top:18px">Traffic from the selected apps is terminated locally, so the app can
+            show you what would otherwise be invisible — and let you act on it.</p>
+          <ul class="check-list">
+            <li>App, host, port, bytes and whether a connection was blocked.</li>
+            <li>Search, filter by app, or show blocked attempts only.</li>
+            <li>Turn any connection into a rule: block the app or the host.</li>
+            <li>Record to <code>.pcap</code> for Wireshark, or export the list as CSV.</li>
+          </ul>
+        </div>
+
+        <div class="traffic-shot" data-reveal style="--d:80ms">
+          <img src="assets/app-traffic.jpg" width="738" height="1600" loading="lazy" decoding="async"
+            alt="The App Throttler Traffic screen with the Connections tab selected. It lists eight open Instagram connections to Facebook CDN addresses and to 8.8.8.8:53, each with its protocol and byte counts. Above the list are a packet-capture bar, a search field and the filters All apps and Blocked only.">
+        </div>
+      </div>
+    </section>
+
+    <!-- Screens -->
+    <section class="section screens-section" id="screens">
+      <div class="wrap">
+        <div class="split-head" data-reveal>
+          <div>
+            <p class="eyebrow">Interface walkthrough</p>
+            <h2 class="h2" style="margin-top:20px">Every screen,<br>purpose-built.</h2>
+          </div>
+          <p class="aside">Engineered for quick workflows. Switch conditions, isolate apps, audit open flows, and export
+            packet captures without context switching.</p>
+        </div>
+
+        <div class="gallery-container" data-reveal style="--d:60ms">
+          <!-- Navigation Tabs (Left on desktop, chips on mobile) -->
+          <div class="gallery-tabs" role="tablist" aria-label="Application screens">
+            <button class="gallery-tab is-active" role="tab" aria-selected="true" aria-controls="screen-panel"
+              id="tab-0" data-index="0" type="button">
+              <span class="tab-index">01</span>
+              <div class="tab-body">
+                <span class="tab-title"><span class="title-full">Home Dashboard</span><span
+                    class="title-short">Home</span></span>
+                <span class="tab-desc">Logarithmic condition sliders, live throughput meter, and instant degrade
+                  triggers.</span>
+              </div>
+              <span class="tab-indicator" aria-hidden="true"></span>
+            </button>
+
+            <button class="gallery-tab" role="tab" aria-selected="false" aria-controls="screen-panel" id="tab-1"
+              data-index="1" type="button">
+              <span class="tab-index">02</span>
+              <div class="tab-body">
+                <span class="tab-title"><span class="title-full">App Isolation</span><span
+                    class="title-short">Apps</span></span>
+                <span class="tab-desc">Select target packages to throttle. Untargeted apps maintain unimpeded direct
+                  connectivity.</span>
+              </div>
+              <span class="tab-indicator" aria-hidden="true"></span>
+            </button>
+
+            <button class="gallery-tab" role="tab" aria-selected="false" aria-controls="screen-panel" id="tab-2"
+              data-index="2" type="button">
+              <span class="tab-index">03</span>
+              <div class="tab-body">
+                <span class="tab-title"><span class="title-full">Presets &amp; Custom Profiles</span><span
+                    class="title-short">Profiles</span></span>
+                <span class="tab-desc">One-tap cellular and Wi-Fi presets (2G through Satellite) or save tailored custom
+                  setups.</span>
+              </div>
+              <span class="tab-indicator" aria-hidden="true"></span>
+            </button>
+
+            <button class="gallery-tab" role="tab" aria-selected="false" aria-controls="screen-panel" id="tab-3"
+              data-index="3" type="button">
+              <span class="tab-index">04</span>
+              <div class="tab-body">
+                <span class="tab-title"><span class="title-full">Live Traffic Monitor</span><span
+                    class="title-short">Traffic</span></span>
+                <span class="tab-desc">Real-time inspection of active TCP/UDP flows, endpoints, byte counters, and
+                  blocked packets.</span>
+              </div>
+              <span class="tab-indicator" aria-hidden="true"></span>
+            </button>
+
+            <button class="gallery-tab" role="tab" aria-selected="false" aria-controls="screen-panel" id="tab-4"
+              data-index="4" type="button">
+              <span class="tab-index">05</span>
+              <div class="tab-body">
+                <span class="tab-title"><span class="title-full">Connection Inspector</span><span
+                    class="title-short">Inspector</span></span>
+                <span class="tab-desc">Deep socket drilldown with protocol state, addresses, and instant single-tap host
+                  block rules.</span>
+              </div>
+              <span class="tab-indicator" aria-hidden="true"></span>
+            </button>
+
+            <button class="gallery-tab" role="tab" aria-selected="false" aria-controls="screen-panel" id="tab-5"
+              data-index="5" type="button">
+              <span class="tab-index">06</span>
+              <div class="tab-body">
+                <span class="tab-title"><span class="title-full">Diagnostics &amp; Logs</span><span
+                    class="title-short">Logs</span></span>
+                <span class="tab-desc">Timestamped event log and one-tap .pcap export for deep packet inspection in
+                  Wireshark.</span>
+              </div>
+              <span class="tab-indicator" aria-hidden="true"></span>
+            </button>
+
+            <button class="gallery-tab" role="tab" aria-selected="false" aria-controls="screen-panel" id="tab-6"
+              data-index="6" type="button">
+              <span class="tab-index">07</span>
+              <div class="tab-body">
+                <span class="tab-title"><span class="title-full">Tunnel Settings</span><span
+                    class="title-short">Settings</span></span>
+                <span class="tab-desc">Configure IPv6 support, persistent notification visibility, and Quick Settings
+                  tile actions.</span>
+              </div>
+              <span class="tab-indicator" aria-hidden="true"></span>
+            </button>
+          </div>
+
+          <!-- Phone Stage (Right on desktop, centered on mobile) -->
+          <div class="gallery-stage" id="screen-panel" role="tabpanel" aria-labelledby="tab-0">
+            <div class="gallery-phone-wrap">
+              <div class="gallery-phone" title="Click to view full image">
+                <div class="gallery-screen">
+                  <img class="gallery-shot is-active" src="assets/app-home.jpg" width="738" height="1600"
+                    alt="App Throttler Home screen with network condition sliders and live throughput meter."
+                    data-index="0">
+                  <img class="gallery-shot" src="assets/app-apps.jpg" width="738" height="1600" loading="lazy"
+                    decoding="async" alt="App Throttler app picker screen with target packages selection."
+                    data-index="1">
+                  <img class="gallery-shot" src="assets/app-profiles.jpg" width="738" height="1600" loading="lazy"
+                    decoding="async" alt="App Throttler profiles screen listing network presets and custom profiles."
+                    data-index="2">
+                  <img class="gallery-shot" src="assets/app-traffic.jpg" width="738" height="1600" loading="lazy"
+                    decoding="async" alt="App Throttler traffic screen showing active connections and throughput."
+                    data-index="3">
+                  <img class="gallery-shot" src="assets/app-connection-detail.jpg" width="738" height="1600"
+                    loading="lazy" decoding="async"
+                    alt="App Throttler connection detail screen with socket breakdown and blocking rules."
+                    data-index="4">
+                  <img class="gallery-shot" src="assets/app-logs.jpg" width="738" height="1600" loading="lazy"
+                    decoding="async" alt="App Throttler logs screen with diagnostics and pcap capture." data-index="5">
+                  <img class="gallery-shot" src="assets/app-settings.jpg" width="738" height="1600" loading="lazy"
+                    decoding="async" alt="App Throttler settings screen with IPv6 and tunnel options." data-index="6">
+                </div>
+                <div class="gallery-zoom-hint" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m21 21-4.3-4.3M11 8v6M8 11h6" />
+                  </svg>
+                  <span>Expand</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Bottom Control Bar -->
+            <div class="gallery-bar">
+              <button class="gallery-btn" id="gallery-prev" aria-label="Previous screen" type="button">
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M10 12 6 8l4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                    stroke-linejoin="round" />
+                </svg>
+              </button>
+              <div class="gallery-status">
+                <span class="gallery-pill-num" id="gallery-num">01 / 07</span>
+                <span class="gallery-pill-title" id="gallery-title">Home Dashboard</span>
+              </div>
+              <button class="gallery-btn" id="gallery-next" aria-label="Next screen" type="button">
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                    stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Lightbox Modal -->
+    <dialog class="gallery-modal" id="gallery-modal" aria-label="Screenshot preview">
+      <div class="modal-box">
+        <button class="modal-close" id="modal-close" aria-label="Close preview" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+        <img id="modal-img" src="assets/app-home.jpg" alt="Full resolution screenshot">
+        <p id="modal-caption" class="modal-caption"></p>
+      </div>
+    </dialog>
+
+    <!-- Controls + presets -->
+    <section class="section controls-section" id="controls">
+      <div class="wrap">
+        <div class="split-head" data-reveal>
+          <div>
+            <h2 class="h2" style="margin-top:20px">Five numbers,<br>one connection.</h2>
+          </div>
+          <p class="aside">Speeds are logarithmic and the last notch means unlimited. All selected apps share the
+            session values unless one is given its own profile.</p>
+        </div>
+
+        <div class="control-grid" data-reveal style="--d:60ms">
+          <div class="control">
+            <span class="micro-label">Download</span>
+            <b>10 kbps – 50 Mbps</b>
+            <p>Caps data delivered to the selected apps.</p>
+          </div>
+          <div class="control">
+            <span class="micro-label">Upload</span>
+            <b>10 kbps – 50 Mbps</b>
+            <p>Caps data sent by the selected apps.</p>
+          </div>
+          <div class="control">
+            <span class="micro-label">Latency</span>
+            <b>0 – 2,000 ms</b>
+            <p>Added to every round trip, half each way.</p>
+          </div>
+          <div class="control">
+            <span class="micro-label">Jitter</span>
+            <b>0 – 500 ms</b>
+            <p>Random variation of latency, per packet.</p>
+          </div>
+          <div class="control">
+            <span class="micro-label">Packet loss</span>
+            <b>0 – 30%</b>
+            <p>Share of packets dropped at random.</p>
+          </div>
+        </div>
+
+        <div class="presets" id="presets" data-reveal>
+          <div class="presets-head">
+            <h3>Presets, ready to go</h3>
+            <p>Built in. Save your own values and app selection as a profile.</p>
+          </div>
+          <div class="table-wrap" tabindex="0" role="region" aria-label="Presets table, scrollable">
+            <table class="presets-table">
+              <caption class="sr-only">Built-in network presets and their download, upload, latency, jitter and packet
+                loss values</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Network</th>
+                  <th scope="col">Download</th>
+                  <th scope="col">Upload</th>
+                  <th scope="col">Latency</th>
+                  <th scope="col">Jitter</th>
+                  <th scope="col">Loss</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>2G</td>
+                  <td>40 kbps</td>
+                  <td>20 kbps</td>
+                  <td>300 ms</td>
+                  <td>50 ms</td>
+                  <td>2.0%</td>
+                </tr>
+                <tr>
+                  <td>EDGE</td>
+                  <td>240 kbps</td>
+                  <td>200 kbps</td>
+                  <td>400 ms</td>
+                  <td>80 ms</td>
+                  <td>1.5%</td>
+                </tr>
+                <tr>
+                  <td>3G</td>
+                  <td>384 kbps</td>
+                  <td>128 kbps</td>
+                  <td>100 ms</td>
+                  <td>20 ms</td>
+                  <td>1.0%</td>
+                </tr>
+                <tr>
+                  <td>4G</td>
+                  <td>10.2 Mbps</td>
+                  <td>5.1 Mbps</td>
+                  <td>20 ms</td>
+                  <td>5 ms</td>
+                  <td>0.1%</td>
+                </tr>
+                <tr>
+                  <td>Slow Wi-Fi</td>
+                  <td>1 Mbps</td>
+                  <td>512 kbps</td>
+                  <td>50 ms</td>
+                  <td>10 ms</td>
+                  <td>0.5%</td>
+                </tr>
+                <tr>
+                  <td>Congested Wi-Fi</td>
+                  <td>2 Mbps</td>
+                  <td>1 Mbps</td>
+                  <td>150 ms</td>
+                  <td>100 ms</td>
+                  <td>5.0%</td>
+                </tr>
+                <tr>
+                  <td>Satellite</td>
+                  <td>5 Mbps</td>
+                  <td>1 Mbps</td>
+                  <td>600 ms</td>
+                  <td>30 ms</td>
+                  <td>0.5%</td>
+                </tr>
+                <tr class="offline">
+                  <td>Offline</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>100%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Automate -->
+    <section class="automate" id="automate">
+      <div class="wrap automate-grid">
+        <div data-reveal>
+          <p class="eyebrow"><span class="dot"></span>Automate</p>
+          <h2 class="h2" style="margin-top:20px">Put the throttle in your test script.</h2>
+          <p class="lede" style="margin-top:18px">Drive the tunnel from adb, a Quick Settings tile or a launcher
+            shortcut. No screen taps in the middle of a run.</p>
+          <ul class="auto-list">
+            <li><b>Quick Settings</b>Start and stop from the shade, using the saved settings.</li>
+            <li><b>Shortcuts</b>Long-press the app icon for Start and Stop throttling.</li>
+            <li><b>Scenarios</b>Train through a tunnel, Elevator ride, Flaky Wi-Fi — or build your own sequence.</li>
+          </ul>
+        </div>
+
+        <div data-reveal style="--d:80ms">
+          <div class="terminal">
+            <div class="term-head">
+              <span>adb · start a session</span>
+              <button class="copy" data-copy="#adb-start" type="button">Copy</button>
+            </div>
+            <pre class="term-code" id="adb-start"><span class="prompt">$ </span>adb shell am start \
+  -n com.rangandale.appthrottler/.control.ControlActivity \
+  -a com.rangandale.appthrottler.action.START \
+  --es profile 3G</pre>
+            <div class="term-foot" aria-hidden="true">
+              <span>START</span><span>STOP</span><span>SCENARIO</span><span>CANCEL_SCENARIO</span><span>RESET_CONNECTIONS</span>
+            </div>
+          </div>
+          <p class="term-note">VPN permission must be granted once in the app. Names are matched case-insensitively; a
+            scenario such as “Elevator ride” needs quoting.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Statement -->
+    <section class="statement-section">
+      <div class="wrap statement" data-reveal>
+        <h2 class="h2">No root. No server.<br>Nothing leaves the phone.</h2>
+        <p class="lede">The throttle is a local VPN that only touches the apps you select. There is no account, no
+          analytics, and no traffic routed through us. The source is yours to read.</p>
+      </div>
+      <div class="wrap">
+        <div class="facts" data-reveal style="--d:60ms">
+          <div class="fact">
+            <span class="micro-label">No root</span>
+            <p>Runs as a local VPN on stock Android 5.0 and newer.</p>
+          </div>
+          <div class="fact">
+            <span class="micro-label">Local only</span>
+            <p>Traffic is relayed straight to the internet. Nothing is sent to a third party.</p>
+          </div>
+          <div class="fact">
+            <span class="micro-label">GPL-3.0</span>
+            <p>Read it, audit it, fork it. Issues and pull requests are welcome.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Download -->
+    <section class="download-section" id="download">
+      <div class="wrap">
+        <div class="download-card" data-reveal>
+          <div class="download-main">
+            <div class="app-icon" aria-hidden="true">
+              <svg viewBox="0 0 108 108" fill="none">
+                <path d="M26 70a28 28 0 1 1 56 0" stroke="currentColor" stroke-width="8" stroke-linecap="round" />
+                <path d="M54 70 41 51" stroke="currentColor" stroke-width="8" stroke-linecap="round" />
+                <circle cx="54" cy="70" r="6" fill="currentColor" />
+              </svg>
+            </div>
+            <div class="download-copy">
+              <h2>Get the build.</h2>
+              <p>v0.1.0 release APK · Android 5.0 and newer · 6.4 MB. Signed release build; Android asks for VPN
+                permission the first time you start it.</p>
+              <div class="checksum-bar">
+                <span class="checksum-tag">SHA-256</span>
+                <code class="checksum-hash"
+                  id="apk-hash">9cc1f8e4dab05fde368c2fec5540836e8f70b4f10816b6c240ef071e5c860caa</code>
+                <button class="checksum-copy copy" data-copy="#apk-hash" type="button"
+                  aria-label="Copy SHA-256 hash">Copy</button>
+              </div>
+            </div>
+          </div>
+          <div class="download-actions">
+            <a class="btn btn-primary" href="https://github.com/RAN-GAN/app-throtler/releases/latest" target="_blank"
+              rel="noopener">
+              Releases on GitHub
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 2v8m0 0 3.2-3.2M8 10 4.8 6.8M3 12.5v1h10v-1" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </a>
+            <a class="btn btn-ghost" href="https://github.com/RAN-GAN/app-throtler" target="_blank" rel="noopener">
+              Source on GitHub
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M6 3h7v7M13 3 4 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </svg>
+            </a>
+          </div>
+        </div>
+
+        <div class="build" data-reveal style="--d:60ms">
+          <span class="build-label">Build &amp; install from source</span>
+          <pre id="build-cmd">./gradlew :app:assembleRelease
+adb install -r release/AppThrottler-v0.1.0.apk</pre>
+          <button class="copy" data-copy="#build-cmd" type="button">Copy</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-top">
+        <a class="brand" href="#top" aria-label="App Throttler, back to top">
+          <svg viewBox="0 0 108 108" fill="none" aria-hidden="true">
+            <path d="M30 70a24 24 0 1 1 48 0" stroke="currentColor" stroke-width="7" stroke-linecap="round" />
+            <path d="M54 70 42 50" stroke="currentColor" stroke-width="7" stroke-linecap="round" />
+            <circle cx="54" cy="70" r="5.5" fill="currentColor" />
+          </svg>
+          <span>App Throttler</span>
+        </a>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="https://github.com/RAN-GAN/app-throtler" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/RAN-GAN/app-throtler/releases" target="_blank" rel="noopener">Releases</a>
+          <a href="https://github.com/RAN-GAN/app-throtler#readme" target="_blank" rel="noopener">Readme</a>
+          <a href="https://github.com/RAN-GAN/app-throtler/blob/main/docs/ARCHITECTURE.md" target="_blank"
+            rel="noopener">Architecture</a>
+          <a href="https://github.com/RAN-GAN/app-throtler/blob/main/docs/DEVELOPMENT.md" target="_blank"
+            rel="noopener">Development</a>
+          <a href="https://github.com/RAN-GAN/app-throtler/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+          <a href="https://github.com/RAN-GAN/app-throtler/blob/main/SECURITY.md" target="_blank"
+            rel="noopener">Security</a>
+        </nav>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 App Throttler · GPL-3.0</span>
+        <span>Made for Android</span>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var nav = document.getElementById('nav');
+      var onScroll = function () {
+        nav.classList.toggle('is-scrolled', window.scrollY > 8);
+      };
+      onScroll();
+      window.addEventListener('scroll', onScroll, { passive: true });
+
+      var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var targets = document.querySelectorAll('[data-reveal]');
+
+      if (reduce || !('IntersectionObserver' in window)) {
+        targets.forEach(function (el) { el.classList.add('is-visible'); });
+      } else {
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-visible');
+              io.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+        targets.forEach(function (el) { io.observe(el); });
+      }
+
+      document.querySelectorAll('.copy').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var target = document.querySelector(button.getAttribute('data-copy'));
+          if (!target) return;
+          var text = target.innerText.replace(/^\$\s*/, '');
+          var done = function () {
+            var previous = button.textContent;
+            button.textContent = 'Copied';
+            window.setTimeout(function () { button.textContent = previous; }, 1500);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, function () { });
+          } else {
+            var area = document.createElement('textarea');
+            area.value = text;
+            document.body.appendChild(area);
+            area.select();
+            try { document.execCommand('copy'); done(); } catch (e) { }
+            document.body.removeChild(area);
+          }
+        });
+      });
+
+      // ————— Screens Interactive Showcase —————
+      (function () {
+        var tabs = document.querySelectorAll('.gallery-tab');
+        var shots = document.querySelectorAll('.gallery-shot');
+        var numEl = document.getElementById('gallery-num');
+        var titleEl = document.getElementById('gallery-title');
+        var prevBtn = document.getElementById('gallery-prev');
+        var nextBtn = document.getElementById('gallery-next');
+        var phone = document.querySelector('.gallery-phone');
+        var modal = document.getElementById('gallery-modal');
+        var modalImg = document.getElementById('modal-img');
+        var modalCap = document.getElementById('modal-caption');
+        var modalClose = document.getElementById('modal-close');
+
+        if (!tabs.length || !shots.length) return;
+
+        var titles = [
+          'Home Dashboard',
+          'App Isolation',
+          'Presets & Custom Profiles',
+          'Live Traffic Monitor',
+          'Connection Inspector',
+          'Diagnostics & Logs',
+          'Tunnel Settings'
+        ];
+
+        var currentIndex = 0;
+
+        function setScreen(index) {
+          if (index < 0) index = tabs.length - 1;
+          if (index >= tabs.length) index = 0;
+          currentIndex = index;
+
+          tabs.forEach(function (tab, i) {
+            var active = i === index;
+            tab.classList.toggle('is-active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+            if (active && window.innerWidth <= 1000) {
+              tab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            }
+          });
+
+          shots.forEach(function (shot, i) {
+            shot.classList.toggle('is-active', i === index);
+          });
+
+          if (numEl) numEl.textContent = '0' + (index + 1) + ' / 0' + tabs.length;
+          if (titleEl) titleEl.textContent = titles[index] || '';
+        }
+
+        tabs.forEach(function (tab) {
+          tab.addEventListener('click', function () {
+            var idx = parseInt(tab.getAttribute('data-index'), 10);
+            setScreen(idx);
+          });
+          tab.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+              e.preventDefault();
+              setScreen(currentIndex + 1);
+              tabs[currentIndex].focus();
+            } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+              e.preventDefault();
+              setScreen(currentIndex - 1);
+              tabs[currentIndex].focus();
+            }
+          });
+        });
+
+        if (prevBtn) prevBtn.addEventListener('click', function () { setScreen(currentIndex - 1); });
+        if (nextBtn) nextBtn.addEventListener('click', function () { setScreen(currentIndex + 1); });
+
+        // Touch swipe on mobile phone
+        if (phone) {
+          var touchStartX = 0;
+          phone.addEventListener('touchstart', function (e) {
+            if (e.changedTouches && e.changedTouches[0]) {
+              touchStartX = e.changedTouches[0].screenX;
+            }
+          }, { passive: true });
+          phone.addEventListener('touchend', function (e) {
+            if (e.changedTouches && e.changedTouches[0]) {
+              var diff = e.changedTouches[0].screenX - touchStartX;
+              if (Math.abs(diff) > 40) {
+                if (diff < 0) setScreen(currentIndex + 1);
+                else setScreen(currentIndex - 1);
+              }
+            }
+          }, { passive: true });
+
+          // Click to open lightbox
+          phone.addEventListener('click', function () {
+            if (!modal) return;
+            var activeShot = shots[currentIndex];
+            if (activeShot && modalImg) {
+              modalImg.src = activeShot.src;
+              modalImg.alt = activeShot.alt;
+              if (modalCap) modalCap.textContent = titles[currentIndex] || '';
+              if (typeof modal.showModal === 'function') {
+                modal.showModal();
+              } else {
+                modal.setAttribute('open', '');
+              }
+            }
+          });
+        }
+
+        if (modalClose && modal) {
+          modalClose.addEventListener('click', function () {
+            if (typeof modal.close === 'function') modal.close();
+            else modal.removeAttribute('open');
+          });
+          modal.addEventListener('click', function (e) {
+            if (e.target === modal) {
+              if (typeof modal.close === 'function') modal.close();
+              else modal.removeAttribute('open');
+            }
+          });
+        }
+      })();
+    })();
+  </script>
+</body>
+
+</html>
