@@ -12,6 +12,7 @@ captures/
 
 # Local Android config
 local.properties
+keystore.properties
 *.keystore
 *.jks
 
